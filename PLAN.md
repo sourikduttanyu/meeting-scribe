@@ -20,6 +20,7 @@ Target: "pseudo-realtime" — captions ≤ ~2s after an utterance ends, summarie
 | 2. Call + signaling | ✅ done |
 | 2.1 UI/UX overhaul | ✅ done |
 | 3. Scribe ingest (audio + share state) | ✅ done |
+| 3.5 Custom SFU (replace mesh) | 🔨 in progress |
 | 4. Live captions | ⬜ |
 | 5. Summaries + Q&A | ⬜ |
 | 6. Screen understanding | ⬜ |
@@ -154,6 +155,20 @@ The new join path shifted timing so both peers created their connection simultan
 **Interview Q:** *"Why timestamp from RTP time instead of arrival time?"* → Arrival time includes jitter: packets bunch up and spread out on the network, so arrival-based timestamps smear and reorder speech. RTP timestamps come from the sender's sample clock, so spacing is exact. I anchor once to our clock and re-anchor if they drift more than 500ms apart. The rigorous version uses RTCP Sender Reports to map to sender wall-clock time.
 
 
+### 3.5 Custom SFU (replace mesh)
+Why: in the mesh every client uploads each track N times (every peer + the Scribe). With an SFU each track goes up once, the server fans it out, and the Scribe becomes an in-process subscriber with no WebRTC connection of its own. Built custom on werift for understanding (mediasoup considered, see Alternatives).
+
+Accepted for the POC: a lost audio packet = 20ms silence (no audio NACK/FEC/PLC). Server crash recovery deferred.
+
+- **Two PeerConnections per client.** Publish: the client offers, the server answers. Subscribe: the server offers, the client answers. Each direction has exactly one offerer, so glare is impossible (the same trick as the phase 3 uplink).
+- **`sfu/router.ts`, transport-agnostic.** Published tracks `{owner, source: mic|camera|screen}` fan out to sinks. Each subscriber gets its **own clone** of every packet: werift's `RTCRtpSender.sendRtp` rewrites SSRC/PT/seq/extensions *in place* and keeps the object in its NACK history, so shared packets would corrupt each other.
+- **Keyframes.** A new video subscription triggers a PLI to the publisher. Subscriber PLIs are forwarded upstream, coalesced to ≤1 per 500ms per track (join storms).
+- **Loss recovery (video).** werift's sender keeps a 128-packet RTP history and answers subscriber NACKs itself. Upstream loss is NACKed by werift's receiver.
+- **Tracks, not claims.** The client declares `mid → source` when publishing, so the server knows which track is the screen. `screen.share.*` comes from the router (published/unpublished), not client meta.
+- **Scribe = router sink** for mic tracks. It keeps its signaling presence as `recorder` for the consent banner.
+- Deferred: simulcast + per-subscriber layer selection (the real "slow subscriber" fix), last-N audio forwarding, single-port ICE mux, TURN.
+- **Verify:** the e2e call/scribe tests keep their checks. A new 3-bot test shows each client's upload ≈ 1× its tracks (not N×). A late subscriber's first video frame arrives within ~1s (PLI works). Measure server CPU per forwarded stream with 4–6 Chrome bots.
+
 ### 4. Live captions
 - `plugins/vad.ts`: energy VAD, 20ms frames, ~600ms hangover, 15s cap → `audio.utterance`.
 - `providers/stt/whisper-cpp.ts` → `whisper-server` HTTP; `plugins/transcribe.ts` → `transcript.final`.
@@ -218,6 +233,7 @@ The new join path shifted timing so both peers created their connection simultan
 
 ## Alternatives considered
 
+- **mediasoup instead of a custom SFU** — production-grade C++ workers with simulcast, BWE, NACK/PLI, `DirectTransport` for server-side consumers. Chosen against for the POC: building the forwarding core ourselves is the point for understanding and interviews. It's the "what I'd ship" answer, and the router interface keeps the swap contained.
 - Meeting-bot APIs (Recall.ai, Meeting BaaS, Attendee, Vexa) — solve joining *other* platforms' meetings; we own the platform.
 - Frameworks with same pattern: LiveKit Agents, Pipecat — study for reference; possible migration target.
 - Gemini Live API — streaming audio+video multimodal, free tier; candidate vision provider for screen share.
