@@ -119,8 +119,11 @@ The new join path shifted timing so both peers created their connection simultan
 - Opus RTP → decode (`@discordjs/opus`) → 48k→16k mono PCM16 → `audio.pcm` per speaker.
 - **Share state as events, not absence.** Scribe emits durable `screen.share.start {by}` / `screen.share.stop {by}` when a screen track actually starts or stops producing RTP. The source of truth is the media the Scribe received, not what the client claims. Q&A then answers "was anything shared in the first 10 min?" from intervals ("nothing shared 0:00–4:12, Alice shared 4:12–9:30").
 - **Coverage events.** `scribe.online` / `scribe.offline` (durable). This separates "nothing happened" from "Scribe wasn't listening", so Q&A can say "I wasn't recording 2:00–3:10" instead of inventing a quiet stretch.
+- **Identity is bound at join, not guessed from audio.** Signaling assigns `participantId` + name on join. That participant's sendonly PeerConnection to the Scribe carries only their tracks, so every RTP packet on it is theirs. `audio.pcm` / `transcript.final` get `source = participantId`. Two people talking at once = two tracks = two transcripts, no diarization. (Names are self-declared until auth lands. See the phase 2 critique.)
+- **Active speaker from RTP audio-level, no decoding.** Browsers stamp every Opus packet with the RFC 6464 `ssrc-audio-level` header extension (dBov). Scribe keeps a ~300ms smoothed level per participant. The loudest one above a speech threshold, held for ≥500ms (hysteresis stops flapping), is the active speaker. It emits durable `speaker.active {id}` only on change. The same signal SFUs use for dominant-speaker switching, and it costs nothing to compute.
+- **"Now" state = projection of the log.** Scribe folds `presence.*`, `screen.share.*`, `speaker.active` and `scribe.*` into a live per-meeting snapshot: `{ participants, sharing: {by} | null, speaking: id | null, scribeOnline }`. `GET /api/meetings/:id/now` returns it, and the room UI and Q&A ("who is presenting right now?") read it. Replaying the log rebuilds the same snapshot at any past `t` ("who was sharing at 12:00?").
 - The screen track is received and its state tracked here. Decoding frames is phase 6.
-- **Verify:** after a 30s call, `data/<meeting>/<speaker>.wav` plays back clean for each participant, with correct duration. Share → stop yields exactly one start/stop pair, with `t` within 1s of the click. Killing the Scribe mid-call leaves an `offline`/`online` gap in the log.
+- **Verify:** after a 30s call, `data/<meeting>/<speaker>.wav` plays back clean for each participant, with correct duration. Share → stop yields exactly one start/stop pair, with `t` within 1s of the click. Killing the Scribe mid-call leaves an `offline`/`online` gap in the log. Two L3 bots speaking in turns produce alternating `speaker.active` events that match the script's turn boundaries within ~1s. `/now` reflects share and speaker changes within ~1s.
 
 ### 4. Live captions
 - `plugins/vad.ts`: energy VAD, 20ms frames, ~600ms hangover, 15s cap → `audio.utterance`.
@@ -166,6 +169,9 @@ The new join path shifted timing so both peers created their connection simultan
 |---|---|---|
 | Server-side hidden Scribe peer, not client-side capture | Works with any WebRTC client, server sees real media, grows into SFU egress | SFU subscriber; clients stop double-uploading |
 | Record per-speaker tracks before mixing | Speaker attribution free, no diarization | Same; diarization only for shared-room mics |
+| Identity = signaling join → that participant's PeerConnection | Attribution is structural, not inferred; overlapping speech stays separate | Signed JWT identity per join; SFU keeps participant ↔ track mapping |
+| Active speaker from RTP `ssrc-audio-level`, emitted on change | Zero decode cost; change-only events keep the log small | Exactly how SFUs (LiveKit, Jitsi) pick dominant speaker |
+| "Now" state is a projection of the event log | One source of truth; any past moment reconstructable by replay | Materialized view per meetingId (Redis hash), rebuilt from the stream on failover |
 | Capture-time timestamps | Timeline correct even when ASR/network lags | Same; NTP-style clock offset per client |
 | Event bus + append-only log | Plugins decoupled; new plugins replay old meetings | Log becomes Kafka/Redis Streams |
 | VAD → whole-utterance Whisper | Whisper is not streaming; utterances give best accuracy, skip silence (~40% compute saved) | Streaming STT provider for partial captions |
