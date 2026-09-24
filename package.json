@@ -9,7 +9,8 @@
   "scripts": {
     "test": "node --test \"server/**/*.test.ts\"",
     "typecheck": "tsc",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "scenario": "node server/testing/scenario-cli.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.2",

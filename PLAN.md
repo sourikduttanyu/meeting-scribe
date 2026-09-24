@@ -16,12 +16,14 @@ Target: "pseudo-realtime" — captions ≤ ~2s after an utterance ends, summarie
 |---|---|
 | 0. Machine setup | ✅ done |
 | 1. Scaffold + core | ✅ done |
+| 1.5 Test harness (scenarios, TTS, L0 bot) | ✅ done |
 | 2. Call + signaling | ⬜ |
 | 3. Scribe ingest (audio) | ⬜ |
 | 4. Live captions | ⬜ |
 | 5. Summaries + Q&A | ⬜ |
 | 6. Screen understanding | ⬜ |
 | 7. MCP server | ⬜ |
+| 8. Interactive AI participant | ⬜ |
 
 ## Phases
 
@@ -49,10 +51,31 @@ Target: "pseudo-realtime" — captions ≤ ~2s after an utterance ends, summarie
 - *How do you keep one bad plugin from taking down the pipeline?* Isolated queue per plugin, errors caught per event, drop policy chosen per data type (freshness vs completeness). Out-of-process workers next.
 - *Why is `ctx` bound to a meeting?* Tenant isolation by construction, and it makes `meetingId` the natural partition key for scaling out.
 
+### 1.5 Test harness ✅
+- `scenarios/*.json`: participants (with `say` voices), timed script (`say` / `screen` / `join` / `leave`), and Q&A `checks` (`mustMention` / `mustNotMention`).
+- `testing/scenario.ts` (types + validation, no deps), `testing/tts.ts` (`say` → 16 kHz mono PCM16 WAV, hash-cached), `testing/l0-bot.ts` (publishes what ASR/OCR would emit, at scenario time).
+- `npm run scenario -- <file>`: validate → render voices → L0 replay into `data/<name>.sqlite` → print timeline.
+- Sample `budget-review.json`: 3 speakers (US/GB/IN accents), late joiner at 1:30, slide at 0:45, a decision, action items.
+- **Verify:** ✅ 15 tests; a 4-min meeting replays in ~2 ms; first-minute query returns exactly the 6 first-minute utterances; WAV header checked (RIFF, mono, 16 kHz, 16-bit, 44-byte header); second render is a cache hit.
+
+**Critique**
+- *Event contracts are defined by the fake before the real thing exists.* Good (phase 4 has a target), but risk: the real ASR naturally produces something different (e.g. segments split mid-sentence). Contract may need to change — fine, bots are the cheapest place to change it.
+- *L0 `endT` defaults to a 150 wpm estimate;* the CLI uses real rendered durations. Tests using the estimate are only approximately right for anything duration-sensitive.
+- *No overlap detection.* A line can be scripted to start before the previous speaker's audio ends. Useful on purpose (overlap tests) but silent by accident — validation should warn when rendered audio overlaps unintentionally.
+- *`say` voices are clean, studio-level audio* → optimistic WER. Mix noise at L1; benchmark on the AMI Meeting Corpus later.
+- *macOS-only TTS.* CI on Linux needs Piper or committed WAV fixtures; the TTS test self-skips off macOS.
+- *Keyword checks are brittle to paraphrase* ("$10k" vs "ten thousand"). Add an LLM judge in phase 5, still anchored by keywords.
+
+**Interview Q&A**
+- *How do you test a nondeterministic AI pipeline?* Scripted scenarios with ground truth; deterministic replay below the model layer (L0/L1); metrics (WER, latency, attribution, Q&A checks) tracked per commit instead of pass/fail only.
+- *Why event time instead of wall clock?* Replayability and testability — the same reason stream processors (Flink, Kafka Streams) separate event time from processing time. A 2h meeting becomes a 2 ms test.
+- *Why a test pyramid of bots?* Cost vs fidelity: most coverage at L0/L1 (instant, deterministic), a thin layer of real-time L2/L3 end-to-end runs.
+
 ### 2. Call + signaling
 - WebSocket signaling server; rooms with `meetingId`, `startedAt`, `durationMs`; roles `participant | recorder`.
 - `web/room.html`: P2P camera + mic + screen share; "AI notes on" banner.
-- **Verify:** two browser tabs connect, see/hear each other, screen share works; recorder role never appears in participant list.
+- **Verify:** two L3 Playwright bots (Chrome fake media from rendered WAVs) connect and exchange audio/video; screen share works manually; recorder role never appears in participant list.
+- Dev-only "+ Add test bot" button (`POST /dev/meetings/:id/bots`) so a human can call a bot.
 
 ### 3. Scribe ingest (audio)
 - `ingest/scribe.ts`: werift peer; each client opens a `sendonly` PeerConnection to it on join.
@@ -79,6 +102,11 @@ Target: "pseudo-realtime" — captions ≤ ~2s after an utterance ends, summarie
 ### 7. MCP server
 - Expose `list_meetings`, `get_timeline(meetingId, from, to)`, `ask(meetingId, question)` over MCP, reusing the Q&A plugin.
 - **Verify:** Claude Code connects to it and answers a question about a stored meeting.
+
+### 8. Interactive AI participant
+- An LLM-driven bot that joins as a (visible, labelled) participant: listens via the pipeline (`transcript.final`), decides when it is addressed, replies with TTS audio over its own WebRTC track.
+- Reuses the L2 bot's WebRTC client + the Q&A plugin. Demo feature, not a testing tool.
+- **Verify:** "Scribe, what did Bob say about marketing?" spoken in a call → spoken answer within ~5 s.
 
 ## Scale path
 

@@ -1,0 +1,42 @@
+{
+  "title": "Q3 budget review",
+  "durationMs": 240000,
+  "participants": [
+    { "id": "alice", "name": "Alice", "voice": "Samantha" },
+    { "id": "bob", "name": "Bob", "voice": "Daniel" },
+    { "id": "rishi", "name": "Rishi", "voice": "Rishi" }
+  ],
+  "script": [
+    { "at": 0, "who": "alice", "join": true },
+    { "at": 0, "who": "bob", "join": true },
+    { "at": 2000, "who": "alice", "say": "Thanks for joining. Today we are reviewing the Q3 budget before the board meeting." },
+    { "at": 9000, "who": "bob", "say": "Marketing spend went up twelve percent, mostly from the conference sponsorship in August." },
+    { "at": 17000, "who": "alice", "say": "Was that sponsorship planned, or did it come out of the contingency fund?" },
+    { "at": 23000, "who": "bob", "say": "It came out of contingency. We had about forty thousand dollars left there." },
+    { "at": 45000, "who": "alice", "screen": "slides/revenue.png", "text": "Q3 Revenue: $4.2M (+8% QoQ). Top segment: Enterprise." },
+    { "at": 47000, "who": "alice", "say": "On revenue, we closed at four point two million, up eight percent from last quarter." },
+    { "at": 56000, "who": "bob", "say": "Enterprise carried most of that. Self serve was flat." },
+    { "at": 90000, "who": "rishi", "join": true },
+    { "at": 95000, "who": "rishi", "say": "Sorry I am late. Did we already decide anything about hiring?" },
+    { "at": 101000, "who": "alice", "say": "Not yet. Let's discuss hiring now. We want two backend engineers in Q4." },
+    { "at": 109000, "who": "rishi", "say": "I can cover one of those roles from my team's budget if marketing gives back ten thousand." },
+    { "at": 118000, "who": "bob", "say": "That works. Marketing will return ten thousand to contingency." },
+    { "at": 180000, "who": "alice", "say": "Action items: Bob updates the marketing forecast, Rishi opens the backend job posting. Thanks everyone." },
+    { "at": 190000, "who": "bob", "leave": true }
+  ],
+  "checks": [
+    {
+      "ask": "What happened in the first minute?",
+      "mustMention": ["Q3 budget", "marketing", "revenue"],
+      "mustNotMention": ["hiring", "backend"]
+    },
+    {
+      "ask": "What was decided about hiring?",
+      "mustMention": ["two backend engineers", "ten thousand"]
+    },
+    {
+      "ask": "What are the action items?",
+      "mustMention": ["forecast", "job posting"]
+    }
+  ]
+}

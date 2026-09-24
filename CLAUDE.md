@@ -29,6 +29,7 @@ Node server
 - **Timestamps = capture time**, ms offset from meeting start. Never use processing time.
 - **Event log is source of truth** (event sourcing). Plugins must be replayable over a stored meeting.
 - Meetings have a fixed `durationMs`; time-range questions ("first half") resolve against it.
+- **Event time, not wall clock.** Plugins schedule on event `t` (e.g. "summarize every 60s" = when `t` crosses the next minute), never `setInterval`/`Date.now()`. Wall clock is only read at the ingest edge. This is what lets bots replay a 2h meeting in seconds.
 
 ## Plugin contract
 
@@ -50,6 +51,21 @@ Rules:
 - Speech queues use `drop: "never"`; screen frames use `drop: "oldest"`. High-volume raw topics (`audio.pcm`) are emitted with `{ durable: false }`.
 - Plugins must not rely on receiving their own events (the pipeline skips self-delivery).
 - Topic names: `<domain>.<kind>` — `audio.pcm`, `audio.utterance`, `transcript.final`, `screen.frame`, `screen.text`, `summary.chunk`, `qa.answer`.
+
+## Test bots
+
+Scenarios (`scenarios/*.json`) are scripted meetings = ground truth for every level:
+
+| Level | Bot | Enters at | Status |
+|---|---|---|---|
+| L0 | `server/testing/l0-bot.ts` | publishes `transcript.final` / `screen.text` / `presence.*` | ✅ |
+| L1 | audio bot | `audio.pcm` from rendered WAVs | phase 4 |
+| L2 | werift WebRTC client | signaling + Scribe, like a real user | phase 3 |
+| L3 | Playwright + Chrome fake media | browser UI | phase 2 |
+
+- Event shapes the bots emit are **contracts** real stages must match (`TranscriptFinal`, `ScreenText` in `l0-bot.ts`).
+- Voices: macOS `say` → 16 kHz mono WAV, cached in `data/tts/` by hash(voice, text).
+- Bots join as normal participants with `bot: true`; any `/dev/*` routes exist only when `NODE_ENV=development`.
 
 ## Stack
 
@@ -85,4 +101,5 @@ The recorder is hidden from the video grid, **not** from users: the room UI alwa
 ```sh
 npm run check      # typecheck + tests
 npm test           # tests only (node:test)
+npm run scenario -- scenarios/budget-review.json   # render voices, replay via L0, print timeline
 ```
