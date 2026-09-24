@@ -6,7 +6,7 @@ import type { ServerMsg } from "./signaling.ts";
 
 let app: App;
 before(async () => {
-  app = await startApp();
+  app = await startApp({ scribe: false }); // drives recorders by hand
 });
 after(() => app.close());
 

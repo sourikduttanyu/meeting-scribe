@@ -60,7 +60,7 @@ Scenarios (`scenarios/*.json`) are scripted meetings = ground truth for every le
 |---|---|---|---|
 | L0 | `server/testing/l0-bot.ts` | publishes `transcript.final` / `screen.text` / `presence.*` | ✅ |
 | L1 | audio bot | `audio.pcm` from rendered WAVs | phase 4 |
-| L2 | werift WebRTC client | signaling + Scribe, like a real user | phase 3 |
+| L2 | werift WebRTC client | signaling + Scribe, like a real user | later (CI / load tests); L3 covers the real path |
 | L3 | `server/testing/l3-bot.ts` (installed Chrome, fake media) | the real web UI | ✅ |
 
 - Event shapes the bots emit are **contracts** real stages must match (`TranscriptFinal`, `ScreenText` in `l0-bot.ts`).
@@ -70,7 +70,7 @@ Scenarios (`scenarios/*.json`) are scripted meetings = ground truth for every le
 ## Stack
 
 - Node 25 + TypeScript (ESM), run directly via type stripping — erasable syntax only (no `enum`, no parameter properties). `tsc` (TS 7) typechecks only.
-- Built-ins over deps: `node:test`, `node:sqlite`. werift for server-side WebRTC.
+- Built-ins over deps: `node:test`, `node:sqlite`. werift for server-side WebRTC, opusscript (WASM libopus) for decode.
 - whisper.cpp via `whisper-server` (Homebrew), model `models/ggml-small.en.bin`.
 - Ollama at `localhost:11434`, default model `qwen2.5:7b` (`llama3.2:1b` for fast/cheap calls).
 - ffmpeg (Homebrew) for VP8 decode.
@@ -105,4 +105,5 @@ npm run scenario -- scenarios/budget-review.json   # render voices, replay via L
 npm start          # server on :3000
 npm run dev        # + watch mode + /dev routes ("+ Add test bot" button)
 npm run e2e:call   # two headless Chrome bots: connect, recorder banner, screen share
+npm run e2e:scribe # real Scribe: speaker turns, share start/stop, /now replay, per-speaker WAVs
 ```

@@ -19,7 +19,7 @@ Target: "pseudo-realtime" — captions ≤ ~2s after an utterance ends, summarie
 | 1.5 Test harness (scenarios, TTS, L0 bot) | ✅ done |
 | 2. Call + signaling | ✅ done |
 | 2.1 UI/UX overhaul | ✅ done |
-| 3. Scribe ingest (audio + share state) | ⬜ |
+| 3. Scribe ingest (audio + share state) | ✅ done |
 | 4. Live captions | ⬜ |
 | 5. Summaries + Q&A | ⬜ |
 | 6. Screen understanding | ⬜ |
@@ -114,7 +114,7 @@ The new join path shifted timing so both peers created their connection simultan
 - The Timeline panel is client-local (built from signaling events), so a late joiner's timeline starts empty. Phase 5 replaces it with the server event log — the real product.
 - Google Fonts is an external dependency for an otherwise self-contained app; self-host the two fonts for offline demos.
 
-### 3. Scribe ingest (audio + share state)
+### 3. Scribe ingest (audio + share state) ✅
 - `ingest/scribe.ts`: werift peer; each client opens a `sendonly` PeerConnection to it on join (mic + screen when sharing).
 - Opus RTP → decode (`@discordjs/opus`) → 48k→16k mono PCM16 → `audio.pcm` per speaker.
 - **Share state as events, not absence.** Scribe emits durable `screen.share.start {by}` / `screen.share.stop {by}` when a screen track actually starts or stops producing RTP. The source of truth is the media the Scribe received, not what the client claims. Q&A then answers "was anything shared in the first 10 min?" from intervals ("nothing shared 0:00–4:12, Alice shared 4:12–9:30").
@@ -124,6 +124,35 @@ The new join path shifted timing so both peers created their connection simultan
 - **"Now" state = projection of the log.** Scribe folds `presence.*`, `screen.share.*`, `speaker.active` and `scribe.*` into a live per-meeting snapshot: `{ participants, sharing: {by} | null, speaking: id | null, scribeOnline }`. `GET /api/meetings/:id/now` returns it, and the room UI and Q&A ("who is presenting right now?") read it. Replaying the log rebuilds the same snapshot at any past `t` ("who was sharing at 12:00?").
 - The screen track is received and its state tracked here. Decoding frames is phase 6.
 - **Verify:** after a 30s call, `data/<meeting>/<speaker>.wav` plays back clean for each participant, with correct duration. Share → stop yields exactly one start/stop pair, with `t` within 1s of the click. Killing the Scribe mid-call leaves an `offline`/`online` gap in the log. Two L3 bots speaking in turns produce alternating `speaker.active` events that match the script's turn boundaries within ~1s. `/now` reflects share and speaker changes within ~1s.
+
+**Built:** `ingest/scribe.ts` (werift, joins via the same signaling protocol over an in-process transport), `plugins/active-speaker.ts`, `plugins/wav-dump.ts`, `core/now.ts` + `GET /api/meetings/:id/now[?t=]`, client uplink in `room.js`. Verify: `npm run e2e:scribe` (two Chrome bots take turns via the real mute button while one shares).
+
+**Verified (3/3 runs):** Scribe online and both uplinks connected. Speaker state from `/now?t=` replay matches the script every 500ms inside every turn. Switch stamped ~80–130ms after the mute click. One share start/stop pair, each within 1s of the click, visible in `/now` within ~250ms (the poll interval). Per-speaker WAVs span the meeting from t=0: RMS ~3–5k in the speaker's own turn, exactly 0 in the other's. whisper.cpp transcribes both WAVs almost verbatim. Opus decode (opusscript/WASM) costs 15µs per 20ms packet, ≈0.08% of a core per speaker.
+
+**Bugs found on the way:**
+- werift gathers ICE during `setLocalDescription`, so candidates went out *before* the answer and Chrome rejected them (`remote description was null`). The Scribe now holds candidates until its answer is sent.
+- `pipeline.use()` is async and wasn't awaited, so the plugin registered after the first events.
+- A symmetric 300ms smoothing stamped speaker switches ~420ms late, because the new speaker had to climb past the speech threshold. Switched to fast attack (50ms) and slow release (300ms), the standard level-meter shape.
+
+#### Critique
+- **Double upload.** Every client uploads its mic twice: once to each peer, once to the Scribe. Fine for 2–4 people, wrong at scale. *At scale:* an SFU receives each track once, and the Scribe subscribes to the SFU (LiveKit egress / track subscription). Clients stop knowing the Scribe exists at the media level.
+- **Scribe runs on the signaling server's event loop.** werift's SRTP/DTLS is pure JS. Decode is cheap (measured) but crypto isn't free, and a busy meeting could add latency to signaling. *Next:* same class, own process. The in-process transport was built so this is just swapping in a WebSocket transport.
+- **No jitter buffer or loss concealment.** Packets are decoded in arrival order, and a lost packet becomes 20ms of silence. OK on localhost/LAN, audible on real networks. *Fix:* a ~60ms reorder buffer by sequence number, and Opus PLC/FEC (decode with a null packet or with the next packet's FEC data).
+- **Capture time is approximate.** `t` is the RTP timestamp anchored to our clock at the first packet, so it carries that packet's one-way network delay, and different speakers may have different delays. *Proper:* map RTP time to sender NTP time via RTCP Sender Reports, plus a per-client clock offset. Matters for overlapping speech ordering, not for "first 5 minutes".
+- **Crash leaves no `scribe.offline`.** A graceful close emits it; a crash doesn't, so the log claims the Scribe was online through the gap. *Fix:* on boot, close any meeting whose last `scribe.*` event is `online` with a synthetic `offline` at the last event's `t`. Or emit heartbeats and treat missing ones as a gap.
+- **Audio level is reported by the sender.** A modified client could claim to be loud and steal the spotlight. Attribution isn't affected (transcripts come from each person's own track), only the active-speaker label. *Hardening:* compute the level server-side from the PCM we decode anyway.
+- **Share stop trusts the client's claim.** Start needs claim *and* media; stop needs only the claim (static screens can legitimately pause RTP). A client that stops sending but keeps claiming stays "sharing". A crash is handled by `peer-left`.
+- **Per-meeting plugin state is never evicted** (active-speaker's map). Needs a `meeting.ended` event. *At scale:* partition-local state dropped when a meetingId's partition moves.
+- **`/now` folds the whole log per request.** O(events). *At scale:* a materialized snapshot per meeting updated on each durable event, periodically checkpointed, and replay from the checkpoint for `?t=` queries.
+- **`audio.pcm` is one bus event per 20ms packet.** 50/s per speaker is fine in-process. At scale, batch into 100–200ms frames, or keep PCM out of the bus (per-speaker ring buffer) and publish references.
+- **L2 (werift client) bot not built.** The L3 Chrome bots exercise the real browser path, which matters more. L2 becomes worth it for fast CI and for load tests (hundreds of fake speakers without hundreds of Chromes).
+
+**Interview Q:** *"How do you know who said what without speaker diarization?"* → Identity is structural. Each participant's media arrives on their own PeerConnection, created after they authenticated to signaling, so every packet is already labelled. Overlapping speech is two tracks, transcribed separately. Diarization is only needed where people share one mic (a conference room), and then only within that track.
+
+**Interview Q:** *"How do you pick the active speaker, and why not from the audio itself?"* → Browsers already put a per-packet level in an RTP header extension (RFC 6464). Reading it costs nothing, needs no decoding, and is what SFUs use for dominant-speaker switching. I smooth it with fast attack / slow release, require a new speaker to win for 500ms (hysteresis), and only log changes. Downside: the sender computes the level, so it's spoofable. Server-side RMS from the decoded PCM is the hardened version.
+
+**Interview Q:** *"Why timestamp from RTP time instead of arrival time?"* → Arrival time includes jitter: packets bunch up and spread out on the network, so arrival-based timestamps smear and reorder speech. RTP timestamps come from the sender's sample clock, so spacing is exact. I anchor once to our clock and re-anchor if they drift more than 500ms apart. The rigorous version uses RTCP Sender Reports to map to sender wall-clock time.
+
 
 ### 4. Live captions
 - `plugins/vad.ts`: energy VAD, 20ms frames, ~600ms hangover, 15s cap → `audio.utterance`.
@@ -177,6 +206,8 @@ The new join path shifted timing so both peers created their connection simultan
 | VAD → whole-utterance Whisper | Whisper is not streaming; utterances give best accuracy, skip silence (~40% compute saved) | Streaming STT provider for partial captions |
 | Provider adapters for STT/LLM/Vision | Vendor swap is a config change | Per-tenant cost/latency choice |
 | werift (pure TS WebRTC) | No native build issues on M4, debuggable | node-datachannel or SFU-native if CPU bound |
+| opusscript (libopus → WASM) over @discordjs/opus | Native binding has no Node 25 prebuild and failed to compile; WASM decodes at 15µs/packet, decoding straight to 16 kHz (no resampler) | Native libopus in a media worker, or let the SFU/STT provider take Opus directly |
+| Scribe answers, never offers | Glare impossible on the uplink by construction | Same pattern for any server-side media consumer |
 | Recorder hidden from grid, visible as indicator | Consent laws (two-party consent, GDPR, DPDP) | Same, plus audit log |
 
 ## Open questions

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { startApp } from "../app.ts";
 import { launchBot, mediaStats, type L3Bot } from "./l3-bot.ts";
 
-const app = await startApp();
+const app = await startApp({ scribe: false }); // this test drives a fake recorder itself; e2e:scribe covers the real one
 const bots: L3Bot[] = [];
 const step = (msg: string) => console.log(`• ${msg}`);
 

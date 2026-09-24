@@ -12,6 +12,7 @@
     "check": "npm run typecheck && npm test",
     "scenario": "node server/testing/scenario-cli.ts",
     "e2e:call": "node server/testing/e2e-call.ts",
+    "e2e:scribe": "node server/testing/e2e-scribe.ts",
     "start": "node server/main.ts",
     "dev": "NODE_ENV=development node --watch server/main.ts"
   },
@@ -22,6 +23,8 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "opusscript": "^0.1.1",
+    "werift": "^0.24.4",
     "ws": "^8.21.3"
   }
 }

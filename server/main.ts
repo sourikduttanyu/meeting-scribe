@@ -6,6 +6,7 @@ const app = await startApp({
   port: Number(process.env.PORT ?? 3000),
   dbPath: "data/meetings.sqlite",
   dev: process.env.NODE_ENV === "development",
+  recordWav: process.env.NODE_ENV === "development" ? "data/recordings" : undefined,
 });
 console.log(`meeting-scribe on ${app.url}${process.env.NODE_ENV === "development" ? " (dev routes on)" : ""}`);
 

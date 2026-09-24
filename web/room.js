@@ -1,4 +1,6 @@
-// Meeting room. P2P mesh: one RTCPeerConnection per remote participant.
+// Meeting room. P2P mesh: one RTCPeerConnection per remote participant, plus
+// one sendonly connection to the Scribe (mic + screen, never camera). We always
+// offer to the Scribe and it always answers, so that link can't glare.
 // Initial connection: only the newcomer offers; the existing peer attaches its
 // tracks when that offer arrives, so the answer carries them (no glare).
 // Later renegotiation (screen share) can start from either side and uses the
@@ -38,12 +40,13 @@ let selfName = "";
 let meeting = null;
 let local = new MediaStream();
 let screen = null;
+let scribe = null; // { id, pc, screenSender }
 let audioCtx = null;
 const want = { mic: true, cam: true }; // user intent; survives device switches and carries into the call
 const levels = new Map(); // tile key -> analyser
 
 // Exposed for e2e tests (bots read connection state and stats).
-window.__room = { peers, get selfId() { return selfId; }, get recorderPresent() { return $("#rec").classList.contains("on"); } };
+window.__room = { peers, get selfId() { return selfId; }, get recorderPresent() { return $("#rec").classList.contains("on"); }, get scribeState() { return scribe?.pc.connectionState ?? "none"; } };
 
 if (!meetingId) location.replace("/");
 init();
@@ -137,6 +140,7 @@ function onServer(msg) {
       meeting = msg.meeting;
       renderMeeting();
       setRecorder(!!msg.recorder);
+      if (msg.recorder) connectScribe(msg.recorder.id);
       setStatus("");
       logEvent(`${selfName} joined`, true);
       for (const p of msg.peers) createPeer(p, true);
@@ -156,10 +160,12 @@ function onServer(msg) {
     }
     case "recorder-joined":
       setRecorder(true);
+      connectScribe(msg.peer.id);
       logEvent("Scribe online", true);
       break;
     case "recorder-left":
       setRecorder(false);
+      closeScribe();
       logEvent("Scribe offline", true);
       break;
     case "signal":
@@ -216,6 +222,7 @@ function createPeer(info, initiator) {
 }
 
 async function onSignal(from, data) {
+  if (from === scribe?.id) return onScribeSignal(data);
   const peer = peers.get(from);
   if (!peer) return;
   const { pc } = peer;
@@ -245,6 +252,37 @@ async function onSignal(from, data) {
   }
 }
 
+// ---------- Scribe uplink ----------
+
+function connectScribe(id) {
+  closeScribe();
+  const pc = new RTCPeerConnection({ iceServers: ICE });
+  scribe = { id, pc, screenSender: null };
+  const signal = (data) => send({ type: "signal", to: id, data });
+  signal({ meta: selfMeta() }); // before media: the Scribe needs to know which track is the screen
+  pc.onicecandidate = ({ candidate }) => candidate && signal({ candidate });
+  pc.onnegotiationneeded = async () => {
+    await pc.setLocalDescription();
+    signal({ description: pc.localDescription });
+  };
+  for (const track of local.getAudioTracks()) pc.addTrack(track, local); // same track as the call: mute applies to both
+  if (screen) scribe.screenSender = pc.addTrack(screen.getVideoTracks()[0], screen);
+}
+
+async function onScribeSignal(data) {
+  try {
+    if (data.description) await scribe.pc.setRemoteDescription(data.description);
+    else if (data.candidate) await scribe.pc.addIceCandidate(data.candidate);
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function closeScribe() {
+  scribe?.pc.close();
+  scribe = null;
+}
+
 function addLocalTracks(peer) {
   peer.tracksAdded = true;
   for (const track of local.getTracks()) peer.pc.addTrack(track, local);
@@ -268,7 +306,8 @@ function selfMeta() {
 }
 
 function broadcastMeta() {
-  for (const id of peers.keys()) send({ type: "signal", to: id, data: { meta: selfMeta() } });
+  const ids = [...peers.keys(), ...(scribe ? [scribe.id] : [])];
+  for (const id of ids) send({ type: "signal", to: id, data: { meta: selfMeta() } });
 }
 
 function tileName(peer, streamId) {
@@ -347,6 +386,7 @@ async function startShare() {
   for (const peer of peers.values()) {
     if (peer.tracksAdded) peer.screenSender = peer.pc.addTrack(track, screen); // else added on first offer
   }
+  if (scribe) scribe.screenSender = scribe.pc.addTrack(track, screen);
   logEvent(`${selfName} started sharing`, true);
 }
 
@@ -357,6 +397,8 @@ function stopShare() {
     if (peer.screenSender) peer.pc.removeTrack(peer.screenSender);
     peer.screenSender = null;
   }
+  if (scribe?.screenSender) scribe.pc.removeTrack(scribe.screenSender);
+  if (scribe) scribe.screenSender = null;
   screen = null;
   removeTile("self-screen");
   $("#share").setAttribute("aria-pressed", "false");
@@ -366,6 +408,7 @@ function stopShare() {
 function leave(reason) {
   stopShare();
   for (const id of [...peers.keys()]) removePeer(id);
+  closeScribe();
   for (const t of local.getTracks()) t.stop();
   ws?.close();
   $("#transport").hidden = true;

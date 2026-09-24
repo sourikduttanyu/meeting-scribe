@@ -5,7 +5,11 @@ import type { AddressInfo } from "node:net";
 import { extname, join, resolve } from "node:path";
 import { WebSocketServer } from "ws";
 import { EventLog } from "./core/log.ts";
+import { foldNow } from "./core/now.ts";
 import { Pipeline } from "./core/pipeline.ts";
+import { Scribe } from "./ingest/scribe.ts";
+import { activeSpeaker } from "./plugins/active-speaker.ts";
+import { wavDump } from "./plugins/wav-dump.ts";
 import { Signaling } from "./signaling.ts";
 
 const WEB_ROOT = resolve("web");
@@ -21,6 +25,8 @@ export interface AppOptions {
   port?: number;
   dbPath?: string;
   dev?: boolean; // enables /dev/* routes (test bots)
+  scribe?: boolean; // hidden recorder joins every started meeting (default true)
+  recordWav?: string; // dir for per-speaker WAV dumps (verification); off when unset
 }
 
 export interface App {
@@ -36,6 +42,8 @@ export async function startApp(opts: AppOptions = {}): Promise<App> {
   const log = new EventLog(opts.dbPath);
   const endTimers = new Set<NodeJS.Timeout>();
   const pipeline = new Pipeline(log);
+  await pipeline.use(activeSpeaker());
+  if (opts.recordWav) await pipeline.use(wavDump(opts.recordWav));
   const signaling = new Signaling({
     getMeeting: (id) => log.getMeeting(id),
     startMeeting: (id) => {
@@ -48,15 +56,19 @@ export async function startApp(opts: AppOptions = {}): Promise<App> {
       return meeting;
     },
     // Ingest edge: the only place wall clock becomes event time.
-    onPresence: (meeting, peer, kind) =>
+    onPresence: (meeting, peer, kind) => {
       pipeline.publish({
         meetingId: meeting.id,
         topic: `presence.${kind}`,
         t: Date.now() - meeting.startedAt!, // participants only join started meetings
         source: peer.id,
         data: { name: peer.name, bot: peer.bot },
-      }),
+      });
+      // After the participant is in the room; also rejoins running meetings after a restart.
+      if (kind === "join" && scribe) queueMicrotask(() => scribe.ensure(meeting.id));
+    },
   });
+  const scribe = opts.scribe === false ? null : new Scribe(signaling, (input, o) => pipeline.publish(input, o));
   const bots: { close(): Promise<void> }[] = [];
 
   const server = createServer((req, res) => {
@@ -83,6 +95,15 @@ export async function startApp(opts: AppOptions = {}): Promise<App> {
       };
       log.createMeeting(meeting);
       return json(res, 201, meeting);
+    }
+
+    const now = url.pathname.match(/^\/api\/meetings\/([\w-]+)\/now$/);
+    if (req.method === "GET" && now) {
+      const meeting = log.getMeeting(now[1]!);
+      if (!meeting) return json(res, 404, { error: "not found" });
+      if (meeting.startedAt === null) return json(res, 200, foldNow([], 0));
+      const at = url.searchParams.has("t") ? Number(url.searchParams.get("t")) : Date.now() - meeting.startedAt;
+      return json(res, 200, foldNow(log.query(meeting.id, { to: at }), at));
     }
 
     const m = url.pathname.match(/^\/api\/meetings\/([\w-]+)$/);
@@ -126,6 +147,7 @@ export async function startApp(opts: AppOptions = {}): Promise<App> {
     async close() {
       for (const t of endTimers) clearTimeout(t);
       await Promise.all(bots.map((b) => b.close()));
+      scribe?.close();
       for (const c of wss.clients) c.terminate();
       await new Promise<void>((r) => wss.close(() => r()));
       await new Promise<void>((r) => server.close(() => r()));
