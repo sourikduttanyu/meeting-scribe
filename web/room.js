@@ -17,6 +17,19 @@ const SPEAKING_RMS = 0.02;
 const $ = (s) => document.querySelector(s);
 const grid = $("#grid");
 
+const svg = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+const ICON = {
+  mic: svg('<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/>'),
+  micOff: svg('<path d="m2 2 20 20M15 9.3V5a3 3 0 0 0-5.7-1.3M9 9v3a3 3 0 0 0 5.1 2.1M18.9 13.2A7 7 0 0 0 19 10M5 10a7 7 0 0 0 12 5M12 17v5"/>'),
+  cam: svg('<rect x="2" y="6" width="14" height="12" rx="2"/><path d="m16 10 6-3v10l-6-3"/>'),
+  camOff: svg('<path d="m2 2 20 20M10.7 6H14a2 2 0 0 1 2 2v2.5L22 7v9.1M16 16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2"/>'),
+};
+for (const b of document.querySelectorAll(".toggle")) {
+  const k = b.dataset.kind;
+  b.innerHTML = `<span class="i-on">${ICON[k]}</span><span class="i-off">${ICON[`${k}Off`]}</span>`;
+  b.onclick = () => toggle(k);
+}
+
 /** @type {Map<string, {pc: RTCPeerConnection, info: any, polite: boolean, makingOffer: boolean, ignoreOffer: boolean, meta: any, screenSender: RTCRtpSender | null}>} */
 const peers = new Map();
 let ws;
@@ -26,6 +39,7 @@ let meeting = null;
 let local = new MediaStream();
 let screen = null;
 let audioCtx = null;
+const want = { mic: true, cam: true }; // user intent; survives device switches and carries into the call
 const levels = new Map(); // tile key -> analyser
 
 // Exposed for e2e tests (bots read connection state and stats).
@@ -56,6 +70,8 @@ async function init() {
     e.preventDefault();
     const name = $("#name").value.trim();
     try { localStorage.setItem("scribe:name", name); } catch {}
+    $("#join-btn").disabled = true;
+    $("#join-btn").textContent = "Joining…";
     join(name, false, local);
   });
   $("#name").focus();
@@ -77,7 +93,7 @@ async function startPreview(choice) {
   for (const t of local.getTracks()) t.stop();
   local = await getMedia(choice);
   $("#preview").srcObject = local;
-  $("#preview-empty").hidden = local.getVideoTracks().length > 0;
+  applyWant();
   watchLevel("preview", local, (rms) => ($("#meter").style.width = `${Math.min(100, rms * 600)}%`));
 
   const devices = await navigator.mediaDevices.enumerateDevices();
@@ -101,7 +117,8 @@ function join(name, bot, stream) {
   $("#incall").hidden = false;
   $("#transport").hidden = false;
   addTile("self", local, `${name} (you)`, { muted: true, self: true });
-  syncSelfTile();
+  applyWant();
+  setStatus("Connecting…");
 
   ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   ws.onopen = () => send({ type: "join", meetingId, name, bot });
@@ -120,6 +137,7 @@ function onServer(msg) {
       meeting = msg.meeting;
       renderMeeting();
       setRecorder(!!msg.recorder);
+      setStatus("");
       logEvent(`${selfName} joined`, true);
       for (const p of msg.peers) createPeer(p, true);
       updateAlone();
@@ -161,6 +179,8 @@ function createPeer(info, initiator) {
   const peer = { pc, info, polite: !initiator, makingOffer: false, ignoreOffer: false, meta: {}, screenSender: null, tracksAdded: false };
   peers.set(info.id, peer);
   const signal = (data) => send({ type: "signal", to: info.id, data });
+  // Placeholder until the first track lands, so a join is visible immediately.
+  addTile(`${info.id}:pending`, null, info.name, { bot: info.bot }).classList.add("connecting", "no-video");
 
   if (initiator) addLocalTracks(peer); // fires negotiationneeded → our offer
   signal({ meta: selfMeta() });
@@ -181,6 +201,7 @@ function createPeer(info, initiator) {
     const stream = streams[0];
     if (!stream) return;
     const key = `${info.id}:${stream.id}`;
+    removeTile(`${info.id}:pending`);
     const isScreen = stream.id === peer.meta.screen;
     addTile(key, stream, tileName(peer, stream.id), { screen: isScreen, bot: info.bot });
     syncPeerTiles(peer);
@@ -188,7 +209,9 @@ function createPeer(info, initiator) {
     stream.onremovetrack = drop;
   };
   pc.onconnectionstatechange = () => {
-    if (pc.connectionState === "failed") setStatus(`Connection to ${info.name} failed`);
+    if (pc.connectionState !== "failed") return;
+    setStatus(`Connection to ${info.name} failed`);
+    grid.querySelector(`[data-key="${info.id}:pending"]`)?.classList.remove("connecting");
   };
 }
 
@@ -254,8 +277,6 @@ function tileName(peer, streamId) {
 
 // ---------- controls ----------
 
-$("#mic").onclick = () => toggleTracks(local.getAudioTracks(), $("#mic"));
-$("#cam").onclick = () => toggleTracks(local.getVideoTracks(), $("#cam"));
 $("#share").onclick = () => (screen ? stopShare() : startShare());
 $("#leave").onclick = () => leave("You left the session.");
 $("#copy").onclick = async () => {
@@ -264,11 +285,12 @@ $("#copy").onclick = async () => {
   setTimeout(() => ($("#copy-label").textContent = "Invite"), 1500);
 };
 document.addEventListener("keydown", (e) => {
-  if ($("#transport").hidden || e.metaKey || e.ctrlKey || e.altKey || e.target.closest("input, select, textarea")) return;
+  if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest("input, select, textarea")) return;
   const key = e.key.toLowerCase();
-  if (key === "m") $("#mic").click();
-  else if (key === "v") $("#cam").click();
-  else if (key === "s") $("#share").click();
+  if (key === "m") toggle("mic");
+  else if (key === "v") toggle("cam");
+  if ($("#transport").hidden) return; // rest is in-call only
+  if (key === "s") $("#share").click();
   else if (key === "i") document.body.classList.toggle("show-stats");
 });
 for (const tab of document.querySelectorAll(".tab")) {
@@ -289,14 +311,29 @@ $("#add-bot").onclick = async (e) => {
   btn.disabled = false;
 };
 
-function toggleTracks(tracks, button) {
-  if (tracks.length === 0) return setStatus("No device for that");
-  for (const t of tracks) t.enabled = !t.enabled;
-  const on = tracks.some((t) => t.enabled);
-  button.setAttribute("aria-pressed", String(on));
-  button.classList.toggle("off", !on);
-  syncSelfTile();
+function toggle(kind) {
+  want[kind] = !want[kind];
+  applyWant();
   broadcastMeta();
+}
+
+// Mute = track.enabled=false: the sender keeps the m-line and sends silence /
+// black frames, so unmute is instant with no renegotiation.
+function applyWant() {
+  const has = { mic: local.getAudioTracks().length > 0, cam: local.getVideoTracks().length > 0 };
+  for (const t of local.getAudioTracks()) t.enabled = want.mic;
+  for (const t of local.getVideoTracks()) t.enabled = want.cam;
+  for (const b of document.querySelectorAll(".toggle")) {
+    const k = b.dataset.kind;
+    const on = has[k] && want[k];
+    const label = k === "mic" ? (on ? "Mute" : "Unmute") : on ? "Turn camera off" : "Turn camera on";
+    b.classList.toggle("off", !on);
+    b.disabled = !has[k];
+    b.dataset.tip = has[k] ? `${label} · ${k === "mic" ? "M" : "V"}` : `No ${k === "mic" ? "microphone" : "camera"}`;
+    b.setAttribute("aria-label", b.dataset.tip);
+  }
+  $("#preview-empty").hidden = has.cam && want.cam;
+  syncSelfTile();
 }
 
 async function startShare() {
@@ -346,7 +383,7 @@ function addTile(key, stream, name, { muted = false, screen: isScreen = false, s
     tile.className = "tile";
     tile.dataset.key = key;
     tile.innerHTML = `<video autoplay playsinline></video><div class="avatar"></div><div class="stats"></div>
-      <div class="tile-bar"><span class="tag name"></span><span class="tag muted">Muted</span>${bot ? '<span class="tag bot">Bot</span>' : ""}</div>`;
+      <div class="tile-bar"><span class="tag muted" aria-label="Muted">${ICON.micOff}</span><span class="tag name"></span>${bot ? '<span class="tag bot">Bot</span>' : ""}</div>`;
     grid.append(tile);
   }
   const video = tile.querySelector("video");
@@ -355,9 +392,10 @@ function addTile(key, stream, name, { muted = false, screen: isScreen = false, s
   tile.classList.toggle("self", self);
   setTileName(tile, name);
   setTileScreen(tile, isScreen);
-  if (!isScreen && stream.getAudioTracks().length) {
+  if (stream && !isScreen && stream.getAudioTracks().length) {
     watchLevel(key, stream, (rms) => tile.classList.toggle("speaking", rms > SPEAKING_RMS && !tile.classList.contains("mic-off")));
   }
+  return tile;
 }
 
 function setTileName(tile, name) {
@@ -386,6 +424,7 @@ function syncSelfTile() {
 
 function syncPeerTiles(peer) {
   for (const tile of grid.querySelectorAll(`[data-key^="${peer.info.id}:"]`)) {
+    if (tile.classList.contains("connecting")) continue;
     const streamId = tile.dataset.key.split(":")[1];
     const isScreen = streamId === peer.meta.screen;
     setTileName(tile, tileName(peer, streamId));

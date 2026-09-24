@@ -35,6 +35,10 @@
       <div class="preview">
         <video id="preview" autoplay playsinline muted></video>
         <div id="preview-empty" class="panel-empty" hidden><div><strong>Camera off</strong>You'll join with audio only.</div></div>
+        <div class="preview-controls">
+          <button type="button" id="pre-mic" class="btn round toggle" data-kind="mic"></button>
+          <button type="button" id="pre-cam" class="btn round toggle" data-kind="cam"></button>
+        </div>
       </div>
       <form id="join-form" class="panel">
         <span class="eyebrow">Ready to join?</span>
@@ -51,7 +55,7 @@
           <label for="cam-select" class="eyebrow">Camera</label>
           <select id="cam-select" class="select"></select>
         </div>
-        <button class="btn primary">Join session</button>
+        <button id="join-btn" class="btn primary">Join session</button>
         <p id="consent" class="consent">Scribe transcribes this session when it is online. Everyone in the room sees the indicator.</p>
       </form>
     </div>
@@ -96,19 +100,12 @@
   <footer id="transport" class="transport" hidden>
     <span id="status" class="status" role="status"></span>
     <div class="controls">
-    <button id="mic" class="btn" aria-pressed="true" title="Mute (M)" aria-label="Microphone">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/></svg>
-      
-    </button>
-    <button id="cam" class="btn" aria-pressed="true" title="Camera (V)" aria-label="Camera">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m16 10 6-3v10l-6-3"/></svg>
-      
-    </button>
-    <button id="share" class="btn" aria-pressed="false" title="Share screen (S)" aria-label="Share screen">
+    <button id="mic" class="btn round toggle" data-kind="mic"></button>
+    <button id="cam" class="btn round toggle" data-kind="cam"></button>
+    <button id="share" class="btn round" aria-pressed="false" data-tip="Share screen · S" aria-label="Share screen">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4M12 7v6M9 10l3-3 3 3"/></svg>
-      
     </button>
-    <button id="add-bot" class="btn" hidden title="Add test bot (dev)" aria-label="Add test bot">
+    <button id="add-bot" class="btn round" hidden data-tip="Add test bot (dev)" aria-label="Add test bot">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 4v4M9 13h.01M15 13h.01"/></svg>
     </button>
     </div>

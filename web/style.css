@@ -81,8 +81,9 @@ button, input, select { font: inherit; color: inherit; }
   border-radius: var(--radius-md);
   color: var(--text-key);
   cursor: pointer;
-  transition: background var(--duration-base) var(--ease-out), border-color var(--duration-base) var(--ease-out), color var(--duration-base) var(--ease-out);
+  transition: background var(--duration-base) var(--ease-out), border-color var(--duration-base) var(--ease-out), color var(--duration-base) var(--ease-out), transform var(--duration-fast) var(--ease-out);
 }
+.btn:active:not(:disabled) { transform: scale(0.96); }
 .btn:hover { background: var(--surface-raised); border-color: var(--border-strong); }
 .btn:disabled { opacity: 0.5; cursor: default; }
 .btn svg { width: 16px; height: 16px; flex: none; }
@@ -238,6 +239,8 @@ button, input, select { font: inherit; color: inherit; }
 }
 .tile:hover .stats:not(:empty), body.show-stats .tile .stats:not(:empty) { opacity: 1; }
 .tile.no-video .avatar { display: grid; }
+.tile.connecting .avatar { align-content: center; gap: var(--space-md); }
+.tile.connecting .avatar::after { content: "Connecting…"; font-size: 12px; font-weight: 400; color: var(--text-muted); }
 .tile.no-video video { visibility: hidden; }
 .tile-bar {
   position: absolute;
@@ -259,7 +262,8 @@ button, input, select { font: inherit; color: inherit; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.tag.muted { color: var(--danger); display: none; }
+.tag.muted { display: none; padding: var(--space-2xs) var(--space-xs); background: var(--danger); color: var(--display-screen); }
+.tag.muted svg { width: 14px; height: 14px; display: block; }
 .tile.mic-off .tag.muted { display: block; }
 .tag.bot { color: var(--text-muted); }
 
@@ -324,11 +328,40 @@ button, input, select { font: inherit; color: inherit; }
 .transport .controls { display: flex; gap: var(--space-md); }
 .transport .status, .transport .end { flex: 1; display: flex; }
 .transport .end { justify-content: flex-end; }
-.transport .controls .btn { width: 44px; height: 44px; justify-content: center; padding: 0; border-radius: 50%; }
-.transport .controls .btn svg { width: 18px; height: 18px; }
-.transport .btn[aria-pressed="true"] { border-color: var(--signal); color: var(--signal); background: var(--signal-wash); }
-.transport .btn.off { border-color: var(--danger); color: var(--danger); background: var(--danger-wash); }
 .status { color: var(--text-faint); font-size: 12px; }
+
+/* Round controls. On = neutral; off = solid danger with a slashed icon, so a
+   muted mic reads at a glance; pressed (sharing) = signal. Every state has a hover. */
+.btn.round { width: 44px; height: 44px; justify-content: center; padding: 0; border-radius: 50%; }
+.btn.round svg { width: 18px; height: 18px; }
+.btn.round:hover { background: var(--surface-hover); }
+.btn[aria-pressed="true"] { border-color: var(--signal); color: var(--signal); background: var(--signal-wash); }
+.btn[aria-pressed="true"]:hover { background: oklch(72% 0.1 205 / 0.22); }
+.btn.off { border-color: var(--danger); color: var(--display-screen); background: var(--danger); }
+.btn.off:hover { border-color: oklch(72% 0.16 25); background: oklch(72% 0.16 25); }
+.toggle .i-off, .toggle.off .i-on { display: none; }
+.toggle.off .i-off { display: block; }
+
+/* Tooltips: CSS only, appear after a short hover so passing the mouse over is quiet. */
+[data-tip] { position: relative; }
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  padding: var(--space-xs) var(--space-md);
+  background: var(--text-key);
+  color: var(--display-screen);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 4px);
+  transition: opacity var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
+}
+[data-tip]:hover::after, [data-tip]:focus-visible::after { opacity: 1; transform: translate(-50%, 0); transition-delay: 350ms; }
 
 /* ---------- green room ---------- */
 
@@ -337,6 +370,9 @@ button, input, select { font: inherit; color: inherit; }
 .preview { position: relative; aspect-ratio: 16 / 9; background: var(--display-screen); border: 1px solid var(--display-bezel); border-radius: var(--radius-lg); overflow: hidden; }
 .preview video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
 .preview .panel-empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; }
+.preview-controls { position: absolute; left: 0; right: 0; bottom: var(--space-lg); display: flex; justify-content: center; gap: var(--space-md); }
+.preview-controls .btn:not(.off) { background: oklch(5% 0.01 225 / 0.6); border-color: oklch(95% 0.012 225 / 0.3); }
+.preview-controls .btn:not(.off):hover { background: oklch(5% 0.01 225 / 0.8); }
 .meter { height: 6px; background: var(--display-bezel); border-radius: var(--radius-sm); overflow: hidden; }
 .meter > div { height: 100%; width: 0; background: var(--signal); transition: width 60ms linear; }
 .consent { font-size: 12px; color: var(--text-muted); margin: 0; }
