@@ -96,7 +96,9 @@ export async function startApp(opts: AppOptions = {}): Promise<App> {
     const bot = url.pathname.match(/^\/dev\/meetings\/([\w-]+)\/bots$/);
     if (opts.dev && req.method === "POST" && bot) {
       const { launchBot } = await import("./testing/l3-bot.ts"); // dev-only dependency
-      const b = await launchBot({ baseUrl: appUrl(), meetingId: bot[1]!, name: `bot-${bots.length + 1}` });
+      const { TALKS, talkScript } = await import("./testing/talks.ts");
+      const talk = TALKS[bots.length % TALKS.length]!; // each new bot talks about something different
+      const b = await launchBot({ baseUrl: appUrl(), meetingId: bot[1]!, name: talk.voice, voice: talk.voice, say: talkScript(talk) });
       bots.push(b);
       return json(res, 201, { name: b.name });
     }
