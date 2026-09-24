@@ -1,6 +1,13 @@
-// Meeting room. P2P mesh: one RTCPeerConnection per remote participant,
-// negotiated with the W3C "perfect negotiation" pattern so either side can
-// renegotiate (screen share mid-call) without offer glare.
+// Meeting room. P2P mesh: one RTCPeerConnection per remote participant.
+// Initial connection: only the newcomer offers; the existing peer attaches its
+// tracks when that offer arrives, so the answer carries them (no glare).
+// Later renegotiation (screen share) can start from either side and uses the
+// W3C "perfect negotiation" pattern.
+//
+// Why not perfect negotiation from the start? If both sides offer at once, the
+// impolite side ignores the other's offer and silently drops the ICE
+// candidates trickled for it. If gathering already finished, no new candidates
+// arrive and the connection sits in iceConnectionState "new" forever.
 
 const params = new URLSearchParams(location.search);
 const meetingId = params.get("m");
@@ -114,11 +121,11 @@ function onServer(msg) {
       renderMeeting();
       setRecorder(!!msg.recorder);
       logEvent(`${selfName} joined`, true);
-      for (const p of msg.peers) createPeer(p);
+      for (const p of msg.peers) createPeer(p, true);
       updateAlone();
       break;
     case "peer-joined":
-      createPeer(msg.peer);
+      createPeer(msg.peer, false);
       logEvent(`${msg.peer.name} joined`, true);
       updateAlone();
       break;
@@ -149,14 +156,13 @@ function onServer(msg) {
   }
 }
 
-function createPeer(info) {
+function createPeer(info, initiator) {
   const pc = new RTCPeerConnection({ iceServers: ICE });
-  const peer = { pc, info, polite: selfId < info.id, makingOffer: false, ignoreOffer: false, meta: {}, screenSender: null };
+  const peer = { pc, info, polite: !initiator, makingOffer: false, ignoreOffer: false, meta: {}, screenSender: null, tracksAdded: false };
   peers.set(info.id, peer);
   const signal = (data) => send({ type: "signal", to: info.id, data });
 
-  for (const track of local.getTracks()) pc.addTrack(track, local);
-  if (screen) peer.screenSender = pc.addTrack(screen.getVideoTracks()[0], screen);
+  if (initiator) addLocalTracks(peer); // fires negotiationneeded → our offer
   signal({ meta: selfMeta() });
 
   pc.onnegotiationneeded = async () => {
@@ -200,6 +206,7 @@ async function onSignal(from, data) {
       if (peer.ignoreOffer) return;
       await pc.setRemoteDescription(data.description);
       if (data.description.type === "offer") {
+        if (!peer.tracksAdded) addLocalTracks(peer); // reuse the offer's transceivers → tracks ride on the answer
         await pc.setLocalDescription();
         send({ type: "signal", to: from, data: { description: pc.localDescription } });
       }
@@ -213,6 +220,12 @@ async function onSignal(from, data) {
   } catch (err) {
     console.error(err);
   }
+}
+
+function addLocalTracks(peer) {
+  peer.tracksAdded = true;
+  for (const track of local.getTracks()) peer.pc.addTrack(track, local);
+  if (screen) peer.screenSender = peer.pc.addTrack(screen.getVideoTracks()[0], screen);
 }
 
 function removePeer(id) {
@@ -256,6 +269,7 @@ document.addEventListener("keydown", (e) => {
   if (key === "m") $("#mic").click();
   else if (key === "v") $("#cam").click();
   else if (key === "s") $("#share").click();
+  else if (key === "i") document.body.classList.toggle("show-stats");
 });
 for (const tab of document.querySelectorAll(".tab")) {
   tab.onclick = () => {
@@ -293,7 +307,9 @@ async function startShare() {
   addTile("self-screen", screen, "Your screen", { muted: true, screen: true, self: true });
   $("#share").setAttribute("aria-pressed", "true");
   broadcastMeta();
-  for (const peer of peers.values()) peer.screenSender = peer.pc.addTrack(track, screen);
+  for (const peer of peers.values()) {
+    if (peer.tracksAdded) peer.screenSender = peer.pc.addTrack(track, screen); // else added on first offer
+  }
   logEvent(`${selfName} started sharing`, true);
 }
 
@@ -329,7 +345,7 @@ function addTile(key, stream, name, { muted = false, screen: isScreen = false, s
     tile = document.createElement("div");
     tile.className = "tile";
     tile.dataset.key = key;
-    tile.innerHTML = `<video autoplay playsinline></video><div class="avatar"></div>
+    tile.innerHTML = `<video autoplay playsinline></video><div class="avatar"></div><div class="stats"></div>
       <div class="tile-bar"><span class="tag name"></span><span class="tag muted">Muted</span>${bot ? '<span class="tag bot">Bot</span>' : ""}</div>`;
     grid.append(tile);
   }
@@ -379,6 +395,40 @@ function syncPeerTiles(peer) {
   }
 }
 
+// ---------- connection stats (hover a tile or press I) ----------
+
+const prevBytes = new Map(); // inbound-rtp id -> { bytes, ts }
+setInterval(async () => {
+  for (const [id, { pc }] of peers) {
+    if (pc.connectionState !== "connected") continue;
+    const report = await pc.getStats();
+    let rtt = null;
+    const video = [];
+    let audio = null;
+    for (const s of report.values()) {
+      if (s.type === "candidate-pair" && s.nominated && s.currentRoundTripTime != null) rtt = s.currentRoundTripTime * 1000;
+      if (s.type !== "inbound-rtp") continue;
+      const prev = prevBytes.get(s.id);
+      prevBytes.set(s.id, { bytes: s.bytesReceived, ts: s.timestamp });
+      const kbps = prev ? ((s.bytesReceived - prev.bytes) * 8) / (s.timestamp - prev.ts) : 0;
+      const codec = report.get(s.codecId)?.mimeType?.split("/")[1] ?? "";
+      if (s.kind === "video") video.push({ track: s.trackIdentifier, kbps, codec, h: s.frameHeight, fps: s.framesPerSecond, lost: s.packetsLost });
+      else audio = { kbps, codec, jitter: (s.jitter ?? 0) * 1000, lost: s.packetsLost };
+    }
+    for (const tile of grid.querySelectorAll(`[data-key^="${id}:"]`)) {
+      const trackId = tile.querySelector("video").srcObject?.getVideoTracks()[0]?.id;
+      const v = video.find((x) => x.track === trackId); // inbound-rtp.trackIdentifier = receiver track id
+      const lines = [];
+      if (rtt != null) lines.push(`rtt   ${rtt.toFixed(0)} ms`);
+      if (v) lines.push(`video ${v.codec} ${v.h ?? "-"}p${v.fps ? ` ${v.fps.toFixed(0)}fps` : ""} ${(v.kbps / 1000).toFixed(2)} Mbps`);
+      if (audio && !tile.classList.contains("screen")) lines.push(`audio ${audio.codec} ${audio.kbps.toFixed(0)} kbps · jitter ${audio.jitter.toFixed(0)} ms`);
+      const lost = (v?.lost ?? 0) + (tile.classList.contains("screen") ? 0 : audio?.lost ?? 0);
+      lines.push(`lost  ${lost} pkts`);
+      tile.querySelector(".stats").textContent = lines.join("\n");
+    }
+  }
+}, 1000);
+
 function updateAlone() {
   $("#alone").hidden = peers.size > 0;
 }
@@ -425,12 +475,12 @@ function renderClock() {
   if (!meeting) return;
   const t = Math.min(elapsedMs(), meeting.durationMs);
   $("#elapsed").textContent = `T+${fmt(t)}`;
-  $("#progress").style.width = `${(t / meeting.durationMs) * 100}%`;
+  $("#progress").style.transform = `scaleX(${t / meeting.durationMs})`;
 }
 
 function setRecorder(on) {
   $("#rec").classList.toggle("on", on);
-  $("#rec").textContent = on ? "REC · Scribe" : "Scribe offline";
+  $("#rec").textContent = on ? "Scribe on" : "Scribe off";
   $("#scribe-state").textContent = on ? "Transcribing" : "Offline";
 }
 

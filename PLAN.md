@@ -102,6 +102,13 @@ Target: "pseudo-realtime" — captions ≤ ~2s after an utterance ends, summarie
 - Mic/cam state now travels in `meta` so peers render MUTED / camera-off correctly.
 - **Verify:** ✅ `npm run e2e:call` still passes; screenshots of landing, green room, in-call (1440×900) and mobile checked.
 
+- Restraint pass: Geist / Geist Mono (tabular numbers), sentence-case labels, no pulsing or badges, off-white primary; teal only on live dots and the speaking outline; centered icon transport. Motion = opacity/transform/color, 120–200 ms.
+- **Live WebRTC stats** per tile (hover or `I`): RTT, codec, resolution, fps, bitrate, audio jitter, packet loss — stats matched to tiles by `inbound-rtp.trackIdentifier`.
+
+**Bug found by the redesign: initial-connect glare lost ICE candidates (e2e ~40% pass → 8/8).**
+The new join path shifted timing so both peers created their connection simultaneously. Both offered; perfect negotiation made the impolite side ignore the other's offer — and, by design, silently drop the ICE candidates trickled for it. Gathering had already completed, so nothing new arrived: `stable / complete / new / new` forever. Diagnosed by adding signaling/ICE state to the e2e failure output. Fix: the newcomer is the only initial offerer; the existing peer adds its tracks when that offer lands (they reuse the offer's transceivers and ride on the answer). Perfect negotiation remains for later renegotiation.
+*Interview Q: "Perfect negotiation handles glare — so why did you still get stuck connections?"* → the candidate-drop interaction above; mitigations: avoid initial glare, or ICE-restart when `iceConnectionState` stays `new` after the answer.
+
 **Critique**
 - Speaking detection is client-side RMS with a fixed threshold → noisy rooms light up constantly. Better: use the server VAD (phase 4) and broadcast `speaking` events.
 - The Timeline panel is client-local (built from signaling events), so a late joiner's timeline starts empty. Phase 5 replaces it with the server event log — the real product.

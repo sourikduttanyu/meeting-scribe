@@ -35,6 +35,7 @@ export async function launchBot(opts: L3BotOptions): Promise<L3Bot> {
   });
   const page = await browser.newPage();
   page.on("pageerror", (err) => console.error(`[${opts.name}] ${err.message}`));
+  page.on("console", (msg) => msg.type() === "error" && console.error(`[${opts.name}] console: ${msg.text()}`));
   const q = new URLSearchParams({ m: opts.meetingId, name: opts.name, bot: "1" });
   await page.goto(`${opts.baseUrl}/room.html?${q}`);
   return { name: opts.name, page, close: () => browser.close() };
@@ -45,15 +46,17 @@ export interface MediaStats {
   connected: number;
   audioBytesIn: number;
   videoBytesIn: number;
+  states: string[]; // signaling/ice/connection per peer, for debugging
 }
 
 // Reads WebRTC stats from the page (window.__room exposed by room.js).
 export function mediaStats(page: Page): Promise<MediaStats> {
   return page.evaluate(async () => {
     const room = (window as unknown as { __room: { peers: Map<string, { pc: RTCPeerConnection }> } }).__room;
-    const out = { peers: 0, connected: 0, audioBytesIn: 0, videoBytesIn: 0 };
+    const out = { peers: 0, connected: 0, audioBytesIn: 0, videoBytesIn: 0, states: [] as string[] };
     for (const { pc } of room.peers.values()) {
       out.peers++;
+      out.states.push(`${pc.signalingState}/${pc.iceGatheringState}/${pc.iceConnectionState}/${pc.connectionState} local=${pc.localDescription?.type ?? '-'} remote=${pc.remoteDescription?.type ?? '-'}`);
       if (pc.connectionState === "connected") out.connected++;
       for (const s of (await pc.getStats()).values()) {
         if (s.type !== "inbound-rtp") continue;

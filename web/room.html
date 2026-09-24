@@ -6,7 +6,7 @@
   <title>Meeting Scribe</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Doto:wght@700&family=Space+Grotesk:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -18,7 +18,7 @@
       <span id="title" class="session-title">Loading…</span>
     </div>
     <span class="spacer"></span>
-    <span id="rec" class="rec" role="status" title="Scribe is transcribing when this is lit">Scribe offline</span>
+    <span id="rec" class="rec" role="status" title="Lit while Scribe is transcribing">Scribe off</span>
     <div class="clock" title="Elapsed / length">
       <span id="elapsed" class="lcd">T+00:00</span><span id="total" class="total">/ --:--</span>
     </div>
@@ -94,28 +94,30 @@
   </div>
 
   <footer id="transport" class="transport" hidden>
-    <button id="mic" class="btn" aria-pressed="true" title="Mute / unmute (M)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/></svg>
-      <span class="label">Mic</span><span class="kbd">M</span>
-    </button>
-    <button id="cam" class="btn" aria-pressed="true" title="Camera on / off (V)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m16 10 6-3v10l-6-3"/></svg>
-      <span class="label">Camera</span><span class="kbd">V</span>
-    </button>
-    <button id="share" class="btn" aria-pressed="false" title="Share screen (S)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4M12 7v6M9 10l3-3 3 3"/></svg>
-      <span class="label">Share</span><span class="kbd">S</span>
-    </button>
-    <button id="add-bot" class="btn" hidden title="Dev only: add a scripted test participant">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 4v4M9 13h.01M15 13h.01"/></svg>
-      <span class="label">Add bot</span>
-    </button>
-    <span class="spacer"></span>
     <span id="status" class="status" role="status"></span>
+    <div class="controls">
+    <button id="mic" class="btn" aria-pressed="true" title="Mute (M)" aria-label="Microphone">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/></svg>
+      
+    </button>
+    <button id="cam" class="btn" aria-pressed="true" title="Camera (V)" aria-label="Camera">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m16 10 6-3v10l-6-3"/></svg>
+      
+    </button>
+    <button id="share" class="btn" aria-pressed="false" title="Share screen (S)" aria-label="Share screen">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4M12 7v6M9 10l3-3 3 3"/></svg>
+      
+    </button>
+    <button id="add-bot" class="btn" hidden title="Add test bot (dev)" aria-label="Add test bot">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 4v4M9 13h.01M15 13h.01"/></svg>
+    </button>
+    </div>
+    <div class="end">
     <button id="leave" class="btn danger" title="Leave session">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
       <span class="label">Leave</span>
     </button>
+    </div>
   </footer>
 </div>
 <script type="module" src="/room.js"></script>
