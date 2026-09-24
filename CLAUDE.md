@@ -8,18 +8,22 @@ See `PLAN.md` for phases, status, and the scale path.
 
 - **$0 POC** on one Apple M4 / 16GB Mac. Local models only by default (whisper.cpp + Ollama). Paid APIs only as optional providers behind config.
 - **Designed for scale.** Keep the POC minimal, but put swap points at seams (interfaces, config). Every non-trivial design decision gets a one-line "at scale → X because Y" note in `PLAN.md` → Decisions. This project doubles as interview material.
-- Start at 2 participants (P2P). Growth path is SFU (LiveKit / mediasoup).
+- Media goes through our own small SFU (werift). Growth path: simulcast + BWE, or mediasoup / LiveKit behind the same router seam.
 
 ## Architecture
 
 ```
-Browser A ◄── WebRTC P2P call ──► Browser B
-   │ sendonly PC (mic, screen)       │ sendonly PC (mic)
-   ▼                                 ▼
+Browser A ──pub PC──► ┌──────────── Node server ────────────┐ ──sub PC──► Browser B
+Browser B ──pub PC──► │ sfu/  router: tracks → sinks (clone) │ ──sub PC──► Browser A
+                      │        │                             │
+                      │        ▼ in-process sink             │
+                      │ ingest/ Scribe: RTP → Opus → PCM16 16k per speaker
+                      └──────────────────────────────────────┘
 Node server
-  signaling    rooms, roles (participant | recorder); recorder never listed to clients
-  ingest/      Scribe peer (werift): RTP → Opus decode → PCM16 16k per speaker
-               VP8 → ffmpeg → 1fps JPEG (PLI for keyframes)
+  signaling    rooms, roles (participant | recorder); recorder never listed to clients; `media` msgs → SFU
+  sfu/         router (transport-agnostic fan-out, PLI coalescing) + werift pub/sub PCs per client
+  ingest/      Scribe: router sink per mic; screen share state from screen tracks
+               VP8 → ffmpeg → 1fps JPEG (phase 6; PLI for keyframes)
   core/        types, topics (NATS-style match), log (SQLite, append-only), pipeline (bus + plugin host)
   plugins/     vad → whisper → transcript; screen → ocr/vision; summarizer; qa
   providers/   STT / LLM / Vision adapters (whisper.cpp, ollama, deepgram, gemini, ...)
@@ -106,4 +110,5 @@ npm start          # server on :3000
 npm run dev        # + watch mode + /dev routes ("+ Add test bot" button)
 npm run e2e:call   # two headless Chrome bots: connect, recorder banner, screen share
 npm run e2e:scribe # real Scribe: speaker turns, share start/stop, /now replay, per-speaker WAVs
+npm run e2e:sfu    # upload-once, keyframe on join, server CPU per stream (BOTS=5 for more)
 ```

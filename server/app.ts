@@ -8,6 +8,8 @@ import { EventLog } from "./core/log.ts";
 import { foldNow } from "./core/now.ts";
 import { Pipeline } from "./core/pipeline.ts";
 import { Scribe } from "./ingest/scribe.ts";
+import { Router } from "./sfu/router.ts";
+import { Sfu } from "./sfu/sfu.ts";
 import { activeSpeaker } from "./plugins/active-speaker.ts";
 import { wavDump } from "./plugins/wav-dump.ts";
 import { Signaling } from "./signaling.ts";
@@ -44,7 +46,10 @@ export async function startApp(opts: AppOptions = {}): Promise<App> {
   const pipeline = new Pipeline(log);
   await pipeline.use(activeSpeaker());
   if (opts.recordWav) await pipeline.use(wavDump(opts.recordWav));
+  const router = new Router();
+  const sfu = new Sfu(router);
   const signaling = new Signaling({
+    media: sfu,
     getMeeting: (id) => log.getMeeting(id),
     startMeeting: (id) => {
       const meeting = log.startMeeting(id, Date.now())!;
@@ -68,7 +73,7 @@ export async function startApp(opts: AppOptions = {}): Promise<App> {
       if (kind === "join" && scribe) queueMicrotask(() => scribe.ensure(meeting.id));
     },
   });
-  const scribe = opts.scribe === false ? null : new Scribe(signaling, (input, o) => pipeline.publish(input, o));
+  const scribe = opts.scribe === false ? null : new Scribe(signaling, router, (input, o) => pipeline.publish(input, o));
   const bots: { close(): Promise<void> }[] = [];
 
   const server = createServer((req, res) => {
@@ -148,6 +153,7 @@ export async function startApp(opts: AppOptions = {}): Promise<App> {
       for (const t of endTimers) clearTimeout(t);
       await Promise.all(bots.map((b) => b.close()));
       scribe?.close();
+      sfu.close();
       for (const c of wss.clients) c.terminate();
       await new Promise<void>((r) => wss.close(() => r()));
       await new Promise<void>((r) => server.close(() => r()));

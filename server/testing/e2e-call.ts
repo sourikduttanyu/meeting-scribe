@@ -33,9 +33,9 @@ try {
   const t0 = Date.now();
   for (const b of bots) {
     await until(`${b.name} connected with audio+video`, () => mediaStats(b.page),
-      (s) => s.connected === 1 && s.audioBytesIn > 2000 && s.videoBytesIn > 2000);
+      (s) => s.peers === 1 && s.pub === "connected" && s.sub === "connected" && s.audioBytesIn > 2000 && s.videoBytesIn > 2000);
   }
-  step(`both connected, audio+video flowing (${Date.now() - t0} ms)`);
+  step(`both connected via SFU, audio+video flowing (${Date.now() - t0} ms)`);
 
   // Hidden recorder: banner turns on, no new peer/tile appears.
   const rec = new WebSocket(app.url.replace("http", "ws") + "/ws");
@@ -47,14 +47,21 @@ try {
   }
   step("recorder joined: banner on for both, still 1 peer each");
 
-  // Mid-call screen share from alice → renegotiation (perfect negotiation path).
-  const tilesBefore = await bob.page.locator(".tile").count();
-  await alice.page.click("#share");
-  await until("bob gets a screen tile", () => bob.page.locator(".tile.screen").count(), (n) => n === 1);
-  step(`screen share renegotiated: bob tiles ${tilesBefore} → ${await bob.page.locator(".tile").count()}`);
-  await alice.page.click("#share");
-  await until("screen tile removed", () => bob.page.locator(".tile.screen").count(), (n) => n === 0);
-  step("screen share stopped: tile removed");
+  // Screen share: alice's publish renegotiation → server publishes → server
+  // offers the new track to bob. Twice, to cover re-share on a reused m-line.
+  for (const round of [1, 2]) {
+    const tilesBefore = await bob.page.locator(".tile").count();
+    await alice.page.click("#share");
+    await until(`bob gets a screen tile (${round})`, () => bob.page.locator(".tile.screen").count(), (n) => n === 1);
+    await until(`bob decodes screen video (${round})`, () => bob.page.evaluate(() => {
+      const v = document.querySelector<HTMLVideoElement>(".tile.screen video");
+      return v ? v.videoWidth : 0;
+    }), (w) => w > 0);
+    step(`share #${round}: bob tiles ${tilesBefore} → ${await bob.page.locator(".tile").count()}, screen video decoding`);
+    await alice.page.click("#share");
+    await until(`screen tile removed (${round})`, () => bob.page.locator(".tile.screen").count(), (n) => n === 0);
+  }
+  step("share stopped twice: tile removed each time");
 
   rec.close();
   await alice.page.click("#leave");

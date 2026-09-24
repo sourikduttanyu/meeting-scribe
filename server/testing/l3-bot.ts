@@ -42,27 +42,26 @@ export async function launchBot(opts: L3BotOptions): Promise<L3Bot> {
 }
 
 export interface MediaStats {
-  peers: number;
-  connected: number;
+  peers: number; // remote participants known to the page
+  pub: string; // publish PC connectionState
+  sub: string; // subscribe PC connectionState
   audioBytesIn: number;
   videoBytesIn: number;
-  states: string[]; // signaling/ice/connection per peer, for debugging
+  bytesOut: number; // everything this client uploads (all on the publish PC)
 }
 
 // Reads WebRTC stats from the page (window.__room exposed by room.js).
 export function mediaStats(page: Page): Promise<MediaStats> {
   return page.evaluate(async () => {
-    const room = (window as unknown as { __room: { peers: Map<string, { pc: RTCPeerConnection }> } }).__room;
-    const out = { peers: 0, connected: 0, audioBytesIn: 0, videoBytesIn: 0, states: [] as string[] };
-    for (const { pc } of room.peers.values()) {
-      out.peers++;
-      out.states.push(`${pc.signalingState}/${pc.iceGatheringState}/${pc.iceConnectionState}/${pc.connectionState} local=${pc.localDescription?.type ?? '-'} remote=${pc.remoteDescription?.type ?? '-'}`);
-      if (pc.connectionState === "connected") out.connected++;
-      for (const s of (await pc.getStats()).values()) {
-        if (s.type !== "inbound-rtp") continue;
-        if (s.kind === "audio") out.audioBytesIn += s.bytesReceived;
-        if (s.kind === "video") out.videoBytesIn += s.bytesReceived;
-      }
+    const room = (window as unknown as { __room: { participants: Map<string, unknown>; pub: RTCPeerConnection | null; sub: RTCPeerConnection | null } }).__room;
+    const out = { peers: room.participants.size, pub: room.pub?.connectionState ?? "none", sub: room.sub?.connectionState ?? "none", audioBytesIn: 0, videoBytesIn: 0, bytesOut: 0 };
+    for (const s of (await room.sub?.getStats())?.values() ?? []) {
+      if (s.type !== "inbound-rtp") continue;
+      if (s.kind === "audio") out.audioBytesIn += s.bytesReceived;
+      if (s.kind === "video") out.videoBytesIn += s.bytesReceived;
+    }
+    for (const s of (await room.pub?.getStats())?.values() ?? []) {
+      if (s.type === "outbound-rtp") out.bytesOut += s.bytesSent;
     }
     return out;
   });

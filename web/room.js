@@ -1,15 +1,9 @@
-// Meeting room. P2P mesh: one RTCPeerConnection per remote participant, plus
-// one sendonly connection to the Scribe (mic + screen, never camera). We always
-// offer to the Scribe and it always answers, so that link can't glare.
-// Initial connection: only the newcomer offers; the existing peer attaches its
-// tracks when that offer arrives, so the answer carries them (no glare).
-// Later renegotiation (screen share) can start from either side and uses the
-// W3C "perfect negotiation" pattern.
-//
-// Why not perfect negotiation from the start? If both sides offer at once, the
-// impolite side ignores the other's offer and silently drops the ICE
-// candidates trickled for it. If gathering already finished, no new candidates
-// arrive and the connection sits in iceConnectionState "new" forever.
+// Meeting room. Media goes through the server's SFU: two RTCPeerConnections.
+//   pub — we offer, server answers. Carries mic, camera, screen (each uploaded once).
+//   sub — server offers, we answer. One track per remote mic/camera/screen.
+// Each connection has exactly one offerer, so offers can never collide (glare).
+// We tell the server which transceiver (mid) is mic/camera/screen; it tells us
+// who owns each track it sends. The Scribe reads tracks inside the server.
 
 const params = new URLSearchParams(location.search);
 const meetingId = params.get("m");
@@ -32,21 +26,31 @@ for (const b of document.querySelectorAll(".toggle")) {
   b.onclick = () => toggle(k);
 }
 
-/** @type {Map<string, {pc: RTCPeerConnection, info: any, polite: boolean, makingOffer: boolean, ignoreOffer: boolean, meta: any, screenSender: RTCRtpSender | null}>} */
-const peers = new Map();
+const participants = new Map(); // id -> { name, bot, mic, cam }
 let ws;
 let selfId = null;
 let selfName = "";
 let meeting = null;
 let local = new MediaStream();
 let screen = null;
-let scribe = null; // { id, pc, screenSender }
+let pub = null; // publish PC
+let sub = null; // subscribe PC
+const sending = new Map(); // pub transceiver -> source
+let remote = {}; // sub mid -> { id, owner, source }, from the latest subscribe-offer
+const remoteTracks = new Map(); // sub mid -> track (a removed m-line's transceiver is gone by the time we look)
+const streams = new Map(); // tile key -> MediaStream of received tracks
 let audioCtx = null;
 const want = { mic: true, cam: true }; // user intent; survives device switches and carries into the call
 const levels = new Map(); // tile key -> analyser
 
 // Exposed for e2e tests (bots read connection state and stats).
-window.__room = { peers, get selfId() { return selfId; }, get recorderPresent() { return $("#rec").classList.contains("on"); }, get scribeState() { return scribe?.pc.connectionState ?? "none"; } };
+window.__room = {
+  participants,
+  get pub() { return pub; },
+  get sub() { return sub; },
+  get selfId() { return selfId; },
+  get recorderPresent() { return $("#rec").classList.contains("on"); },
+};
 
 if (!meetingId) location.replace("/");
 init();
@@ -140,36 +144,31 @@ function onServer(msg) {
       meeting = msg.meeting;
       renderMeeting();
       setRecorder(!!msg.recorder);
-      if (msg.recorder) connectScribe(msg.recorder.id);
       setStatus("");
       logEvent(`${selfName} joined`, true);
-      for (const p of msg.peers) createPeer(p, true);
-      updateAlone();
+      for (const p of msg.peers) addParticipant(p);
+      startMedia();
       break;
     case "peer-joined":
-      createPeer(msg.peer, false);
+      addParticipant(msg.peer);
       logEvent(`${msg.peer.name} joined`, true);
-      updateAlone();
       break;
     case "peer-left": {
-      const name = peers.get(msg.id)?.info.name;
-      removePeer(msg.id);
+      const name = participants.get(msg.id)?.name;
+      removeParticipant(msg.id);
       if (name) logEvent(`${name} left`, true);
-      updateAlone();
       break;
     }
     case "recorder-joined":
       setRecorder(true);
-      connectScribe(msg.peer.id);
       logEvent("Scribe online", true);
       break;
     case "recorder-left":
       setRecorder(false);
-      closeScribe();
       logEvent("Scribe offline", true);
       break;
-    case "signal":
-      onSignal(msg.from, msg.data);
+    case "media":
+      onMedia(msg.data).catch((err) => console.error(err));
       break;
     case "ended":
       leave("Session ended — it reached its set length.");
@@ -180,138 +179,116 @@ function onServer(msg) {
   }
 }
 
-function createPeer(info, initiator) {
-  const pc = new RTCPeerConnection({ iceServers: ICE });
-  const peer = { pc, info, polite: !initiator, makingOffer: false, ignoreOffer: false, meta: {}, screenSender: null, tracksAdded: false };
-  peers.set(info.id, peer);
-  const signal = (data) => send({ type: "signal", to: info.id, data });
+function media(data) {
+  send({ type: "media", data });
+}
+
+// ---------- SFU connections ----------
+
+function startMedia() {
+  pub = new RTCPeerConnection({ iceServers: ICE });
+  sub = new RTCPeerConnection({ iceServers: ICE });
+  pub.onicecandidate = ({ candidate }) => candidate && media({ op: "candidate", pc: "pub", candidate });
+  sub.onicecandidate = ({ candidate }) => candidate && media({ op: "candidate", pc: "sub", candidate });
+  pub.onconnectionstatechange = sub.onconnectionstatechange = () => {
+    if (pub.connectionState === "failed" || sub.connectionState === "failed") setStatus("Media connection failed");
+  };
+  // Browser queues negotiationneeded until the previous offer is answered.
+  pub.onnegotiationneeded = async () => {
+    await pub.setLocalDescription();
+    const sources = {};
+    for (const [t, source] of sending) if (t.mid && t.direction === "sendonly") sources[t.mid] = source;
+    media({ op: "publish", sdp: pub.localDescription.sdp, sources });
+  };
+  sub.ontrack = ({ track, transceiver }) => {
+    const info = remote[transceiver.mid];
+    if (!info) return;
+    remoteTracks.set(transceiver.mid, track);
+    attachRemote(info, track);
+  };
+  const mic = local.getAudioTracks()[0];
+  const cam = local.getVideoTracks()[0];
+  if (mic) sending.set(pub.addTransceiver(mic, { direction: "sendonly", streams: [local] }), "mic");
+  if (cam) sending.set(pub.addTransceiver(cam, { direction: "sendonly", streams: [local] }), "camera");
+  if (screen) publishScreen(screen.getVideoTracks()[0]);
+  sendState();
+}
+
+async function onMedia(msg) {
+  if (msg.op === "publish-answer") {
+    await pub.setRemoteDescription({ type: "answer", sdp: msg.sdp });
+  } else if (msg.op === "subscribe-offer") {
+    const before = remote;
+    remote = msg.tracks; // set first: ontrack fires inside setRemoteDescription
+    await sub.setRemoteDescription({ type: "offer", sdp: msg.sdp });
+    await sub.setLocalDescription();
+    media({ op: "subscribe-answer", sdp: sub.localDescription.sdp });
+    for (const [mid, info] of Object.entries(before)) {
+      if (remote[mid]?.id === info.id) continue;
+      const track = remoteTracks.get(mid);
+      remoteTracks.delete(mid);
+      if (track) detachRemote(info, track);
+    }
+  } else if (msg.op === "candidate") {
+    await (msg.pc === "pub" ? pub : sub).addIceCandidate(msg.candidate);
+  } else if (msg.op === "peer-state") {
+    const p = participants.get(msg.id);
+    if (p) Object.assign(p, { mic: msg.mic, cam: msg.cam });
+    syncParticipantTile(msg.id);
+  }
+}
+
+function tileKey(info) {
+  return info.source === "screen" ? `${info.owner}:screen` : `${info.owner}:cam`;
+}
+
+function attachRemote(info, track) {
+  const key = tileKey(info);
+  const stream = streams.get(key) ?? new MediaStream();
+  streams.set(key, stream);
+  stream.addTrack(track);
+  const p = participants.get(info.owner);
+  if (info.source === "screen") {
+    addTile(key, stream, `${p?.name ?? "?"} · screen`, { screen: true, bot: p?.bot });
+  } else {
+    const tile = addTile(key, stream, p?.name ?? "?", { bot: p?.bot });
+    tile.classList.remove("connecting");
+  }
+  syncParticipantTile(info.owner);
+}
+
+function detachRemote(info, track) {
+  const key = tileKey(info);
+  streams.get(key)?.removeTrack(track);
+  if (info.source === "screen") {
+    streams.delete(key);
+    removeTile(key);
+  }
+  syncParticipantTile(info.owner);
+}
+
+function publishScreen(track) {
+  sending.set(pub.addTransceiver(track, { direction: "sendonly", streams: [screen] }), "screen");
+}
+
+function sendState() {
+  media({ op: "state", mic: local.getAudioTracks().some((t) => t.enabled), cam: local.getVideoTracks().some((t) => t.enabled) });
+}
+
+function addParticipant(p) {
+  participants.set(p.id, { name: p.name, bot: p.bot, mic: true, cam: true });
   // Placeholder until the first track lands, so a join is visible immediately.
-  addTile(`${info.id}:pending`, null, info.name, { bot: info.bot }).classList.add("connecting", "no-video");
-
-  if (initiator) addLocalTracks(peer); // fires negotiationneeded → our offer
-  signal({ meta: selfMeta() });
-
-  pc.onnegotiationneeded = async () => {
-    try {
-      peer.makingOffer = true;
-      await pc.setLocalDescription();
-      signal({ description: pc.localDescription });
-    } catch (err) {
-      console.error(err);
-    } finally {
-      peer.makingOffer = false;
-    }
-  };
-  pc.onicecandidate = ({ candidate }) => candidate && signal({ candidate });
-  pc.ontrack = ({ streams }) => {
-    const stream = streams[0];
-    if (!stream) return;
-    const key = `${info.id}:${stream.id}`;
-    removeTile(`${info.id}:pending`);
-    const isScreen = stream.id === peer.meta.screen;
-    addTile(key, stream, tileName(peer, stream.id), { screen: isScreen, bot: info.bot });
-    syncPeerTiles(peer);
-    const drop = () => stream.getTracks().length === 0 && removeTile(key);
-    stream.onremovetrack = drop;
-  };
-  pc.onconnectionstatechange = () => {
-    if (pc.connectionState !== "failed") return;
-    setStatus(`Connection to ${info.name} failed`);
-    grid.querySelector(`[data-key="${info.id}:pending"]`)?.classList.remove("connecting");
-  };
+  addTile(`${p.id}:cam`, null, p.name, { bot: p.bot }).classList.add("connecting", "no-video");
+  updateAlone();
 }
 
-async function onSignal(from, data) {
-  if (from === scribe?.id) return onScribeSignal(data);
-  const peer = peers.get(from);
-  if (!peer) return;
-  const { pc } = peer;
-  try {
-    if (data.meta) {
-      peer.meta = data.meta;
-      syncPeerTiles(peer);
-    } else if (data.description) {
-      const collision = data.description.type === "offer" && (peer.makingOffer || pc.signalingState !== "stable");
-      peer.ignoreOffer = !peer.polite && collision;
-      if (peer.ignoreOffer) return;
-      await pc.setRemoteDescription(data.description);
-      if (data.description.type === "offer") {
-        if (!peer.tracksAdded) addLocalTracks(peer); // reuse the offer's transceivers → tracks ride on the answer
-        await pc.setLocalDescription();
-        send({ type: "signal", to: from, data: { description: pc.localDescription } });
-      }
-    } else if (data.candidate) {
-      try {
-        await pc.addIceCandidate(data.candidate);
-      } catch (err) {
-        if (!peer.ignoreOffer) throw err;
-      }
-    }
-  } catch (err) {
-    console.error(err);
+function removeParticipant(id) {
+  participants.delete(id);
+  for (const key of [`${id}:cam`, `${id}:screen`]) {
+    streams.delete(key);
+    removeTile(key);
   }
-}
-
-// ---------- Scribe uplink ----------
-
-function connectScribe(id) {
-  closeScribe();
-  const pc = new RTCPeerConnection({ iceServers: ICE });
-  scribe = { id, pc, screenSender: null };
-  const signal = (data) => send({ type: "signal", to: id, data });
-  signal({ meta: selfMeta() }); // before media: the Scribe needs to know which track is the screen
-  pc.onicecandidate = ({ candidate }) => candidate && signal({ candidate });
-  pc.onnegotiationneeded = async () => {
-    await pc.setLocalDescription();
-    signal({ description: pc.localDescription });
-  };
-  for (const track of local.getAudioTracks()) pc.addTrack(track, local); // same track as the call: mute applies to both
-  if (screen) scribe.screenSender = pc.addTrack(screen.getVideoTracks()[0], screen);
-}
-
-async function onScribeSignal(data) {
-  try {
-    if (data.description) await scribe.pc.setRemoteDescription(data.description);
-    else if (data.candidate) await scribe.pc.addIceCandidate(data.candidate);
-  } catch (err) {
-    console.error(err);
-  }
-}
-
-function closeScribe() {
-  scribe?.pc.close();
-  scribe = null;
-}
-
-function addLocalTracks(peer) {
-  peer.tracksAdded = true;
-  for (const track of local.getTracks()) peer.pc.addTrack(track, local);
-  if (screen) peer.screenSender = peer.pc.addTrack(screen.getVideoTracks()[0], screen);
-}
-
-function removePeer(id) {
-  peers.get(id)?.pc.close();
-  peers.delete(id);
-  for (const tile of grid.querySelectorAll(`[data-key^="${id}:"]`)) removeTile(tile.dataset.key);
-}
-
-// What peers need to render us: which stream is which, and mic/cam state.
-function selfMeta() {
-  return {
-    camera: local.id,
-    screen: screen?.id ?? null,
-    mic: local.getAudioTracks().some((t) => t.enabled),
-    cam: local.getVideoTracks().some((t) => t.enabled),
-  };
-}
-
-function broadcastMeta() {
-  const ids = [...peers.keys(), ...(scribe ? [scribe.id] : [])];
-  for (const id of ids) send({ type: "signal", to: id, data: { meta: selfMeta() } });
-}
-
-function tileName(peer, streamId) {
-  return streamId === peer.meta.screen ? `${peer.info.name} · screen` : peer.info.name;
+  updateAlone();
 }
 
 // ---------- controls ----------
@@ -353,7 +330,7 @@ $("#add-bot").onclick = async (e) => {
 function toggle(kind) {
   want[kind] = !want[kind];
   applyWant();
-  broadcastMeta();
+  if (pub) sendState();
 }
 
 // Mute = track.enabled=false: the sender keeps the m-line and sends silence /
@@ -382,33 +359,29 @@ async function startShare() {
   track.onended = stopShare; // browser's own "Stop sharing" button
   addTile("self-screen", screen, "Your screen", { muted: true, screen: true, self: true });
   $("#share").setAttribute("aria-pressed", "true");
-  broadcastMeta();
-  for (const peer of peers.values()) {
-    if (peer.tracksAdded) peer.screenSender = peer.pc.addTrack(track, screen); // else added on first offer
-  }
-  if (scribe) scribe.screenSender = scribe.pc.addTrack(track, screen);
+  if (pub) publishScreen(track);
   logEvent(`${selfName} started sharing`, true);
 }
 
 function stopShare() {
   if (!screen) return;
   for (const t of screen.getTracks()) t.stop();
-  for (const peer of peers.values()) {
-    if (peer.screenSender) peer.pc.removeTrack(peer.screenSender);
-    peer.screenSender = null;
+  const t = [...sending].find(([, source]) => source === "screen")?.[0];
+  if (t && pub?.signalingState !== "closed") {
+    t.sender.replaceTrack(null);
+    t.direction = "inactive"; // → negotiationneeded; the server unpublishes it and rejects the m-line
+    sending.delete(t); // a rejected transceiver is stopped; re-share gets a fresh one (Chrome recycles the m-line)
   }
-  if (scribe?.screenSender) scribe.pc.removeTrack(scribe.screenSender);
-  if (scribe) scribe.screenSender = null;
   screen = null;
   removeTile("self-screen");
   $("#share").setAttribute("aria-pressed", "false");
-  broadcastMeta();
 }
 
 function leave(reason) {
   stopShare();
-  for (const id of [...peers.keys()]) removePeer(id);
-  closeScribe();
+  pub?.close();
+  sub?.close();
+  for (const id of [...participants.keys()]) removeParticipant(id);
   for (const t of local.getTracks()) t.stop();
   ws?.close();
   $("#transport").hidden = true;
@@ -460,59 +433,54 @@ function removeTile(key) {
 function syncSelfTile() {
   const tile = grid.querySelector('[data-key="self"]');
   if (!tile) return;
-  const m = selfMeta();
-  tile.classList.toggle("mic-off", !m.mic);
-  tile.classList.toggle("no-video", !m.cam);
+  tile.classList.toggle("mic-off", !local.getAudioTracks().some((t) => t.enabled));
+  tile.classList.toggle("no-video", !local.getVideoTracks().some((t) => t.enabled));
 }
 
-function syncPeerTiles(peer) {
-  for (const tile of grid.querySelectorAll(`[data-key^="${peer.info.id}:"]`)) {
-    if (tile.classList.contains("connecting")) continue;
-    const streamId = tile.dataset.key.split(":")[1];
-    const isScreen = streamId === peer.meta.screen;
-    setTileName(tile, tileName(peer, streamId));
-    setTileScreen(tile, isScreen);
-    tile.classList.toggle("mic-off", !isScreen && peer.meta.mic === false);
-    tile.classList.toggle("no-video", !isScreen && peer.meta.cam === false);
-  }
+function syncParticipantTile(id) {
+  const tile = grid.querySelector(`[data-key="${id}:cam"]`);
+  const p = participants.get(id);
+  if (!tile || !p || tile.classList.contains("connecting")) return;
+  const hasVideo = (streams.get(`${id}:cam`)?.getVideoTracks().length ?? 0) > 0;
+  tile.classList.toggle("mic-off", p.mic === false);
+  tile.classList.toggle("no-video", p.cam === false || !hasVideo);
 }
 
 // ---------- connection stats (hover a tile or press I) ----------
+// All remote media arrives on `sub`, so one getStats() covers every tile;
+// inbound-rtp.trackIdentifier matches the receiver track id in each tile.
 
 const prevBytes = new Map(); // inbound-rtp id -> { bytes, ts }
 setInterval(async () => {
-  for (const [id, { pc }] of peers) {
-    if (pc.connectionState !== "connected") continue;
-    const report = await pc.getStats();
-    let rtt = null;
-    const video = [];
-    let audio = null;
-    for (const s of report.values()) {
-      if (s.type === "candidate-pair" && s.nominated && s.currentRoundTripTime != null) rtt = s.currentRoundTripTime * 1000;
-      if (s.type !== "inbound-rtp") continue;
-      const prev = prevBytes.get(s.id);
-      prevBytes.set(s.id, { bytes: s.bytesReceived, ts: s.timestamp });
-      const kbps = prev ? ((s.bytesReceived - prev.bytes) * 8) / (s.timestamp - prev.ts) : 0;
-      const codec = report.get(s.codecId)?.mimeType?.split("/")[1] ?? "";
-      if (s.kind === "video") video.push({ track: s.trackIdentifier, kbps, codec, h: s.frameHeight, fps: s.framesPerSecond, lost: s.packetsLost });
-      else audio = { kbps, codec, jitter: (s.jitter ?? 0) * 1000, lost: s.packetsLost };
-    }
-    for (const tile of grid.querySelectorAll(`[data-key^="${id}:"]`)) {
-      const trackId = tile.querySelector("video").srcObject?.getVideoTracks()[0]?.id;
-      const v = video.find((x) => x.track === trackId); // inbound-rtp.trackIdentifier = receiver track id
-      const lines = [];
-      if (rtt != null) lines.push(`rtt   ${rtt.toFixed(0)} ms`);
-      if (v) lines.push(`video ${v.codec} ${v.h ?? "-"}p${v.fps ? ` ${v.fps.toFixed(0)}fps` : ""} ${(v.kbps / 1000).toFixed(2)} Mbps`);
-      if (audio && !tile.classList.contains("screen")) lines.push(`audio ${audio.codec} ${audio.kbps.toFixed(0)} kbps · jitter ${audio.jitter.toFixed(0)} ms`);
-      const lost = (v?.lost ?? 0) + (tile.classList.contains("screen") ? 0 : audio?.lost ?? 0);
-      lines.push(`lost  ${lost} pkts`);
-      tile.querySelector(".stats").textContent = lines.join("\n");
-    }
+  if (sub?.connectionState !== "connected") return;
+  const report = await sub.getStats();
+  let rtt = null;
+  const inbound = new Map(); // track id -> stats
+  for (const s of report.values()) {
+    if (s.type === "candidate-pair" && s.nominated && s.currentRoundTripTime != null) rtt = s.currentRoundTripTime * 1000;
+    if (s.type !== "inbound-rtp") continue;
+    const prev = prevBytes.get(s.id);
+    prevBytes.set(s.id, { bytes: s.bytesReceived, ts: s.timestamp });
+    const kbps = prev ? ((s.bytesReceived - prev.bytes) * 8) / (s.timestamp - prev.ts) : 0;
+    const codec = report.get(s.codecId)?.mimeType?.split("/")[1] ?? "";
+    inbound.set(s.trackIdentifier, { kbps, codec, h: s.frameHeight, fps: s.framesPerSecond, lost: s.packetsLost, jitter: (s.jitter ?? 0) * 1000 });
+  }
+  for (const [key, stream] of streams) {
+    const tile = grid.querySelector(`[data-key="${key}"]`);
+    if (!tile) continue;
+    const v = inbound.get(stream.getVideoTracks()[0]?.id);
+    const a = inbound.get(stream.getAudioTracks()[0]?.id);
+    const lines = [];
+    if (rtt != null) lines.push(`rtt   ${rtt.toFixed(0)} ms (sfu)`);
+    if (v) lines.push(`video ${v.codec} ${v.h ?? "-"}p${v.fps ? ` ${v.fps.toFixed(0)}fps` : ""} ${(v.kbps / 1000).toFixed(2)} Mbps`);
+    if (a) lines.push(`audio ${a.codec} ${a.kbps.toFixed(0)} kbps · jitter ${a.jitter.toFixed(0)} ms`);
+    lines.push(`lost  ${(v?.lost ?? 0) + (a?.lost ?? 0)} pkts`);
+    tile.querySelector(".stats").textContent = lines.join("\n");
   }
 }, 1000);
 
 function updateAlone() {
-  $("#alone").hidden = peers.size > 0;
+  $("#alone").hidden = participants.size > 0;
 }
 
 // ---------- audio levels (speaking indicator + green-room meter) ----------

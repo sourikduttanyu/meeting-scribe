@@ -20,7 +20,7 @@ Target: "pseudo-realtime" — captions ≤ ~2s after an utterance ends, summarie
 | 2. Call + signaling | ✅ done |
 | 2.1 UI/UX overhaul | ✅ done |
 | 3. Scribe ingest (audio + share state) | ✅ done |
-| 3.5 Custom SFU (replace mesh) | 🔨 in progress |
+| 3.5 Custom SFU (replace mesh) | ✅ done |
 | 4. Live captions | ⬜ |
 | 5. Summaries + Q&A | ⬜ |
 | 6. Screen understanding | ⬜ |
@@ -155,7 +155,7 @@ The new join path shifted timing so both peers created their connection simultan
 **Interview Q:** *"Why timestamp from RTP time instead of arrival time?"* → Arrival time includes jitter: packets bunch up and spread out on the network, so arrival-based timestamps smear and reorder speech. RTP timestamps come from the sender's sample clock, so spacing is exact. I anchor once to our clock and re-anchor if they drift more than 500ms apart. The rigorous version uses RTCP Sender Reports to map to sender wall-clock time.
 
 
-### 3.5 Custom SFU (replace mesh)
+### 3.5 Custom SFU (replace mesh) ✅
 Why: in the mesh every client uploads each track N times (every peer + the Scribe). With an SFU each track goes up once, the server fans it out, and the Scribe becomes an in-process subscriber with no WebRTC connection of its own. Built custom on werift for understanding (mediasoup considered, see Alternatives).
 
 Accepted for the POC: a lost audio packet = 20ms silence (no audio NACK/FEC/PLC). Server crash recovery deferred.
@@ -168,6 +168,40 @@ Accepted for the POC: a lost audio packet = 20ms silence (no audio NACK/FEC/PLC)
 - **Scribe = router sink** for mic tracks. It keeps its signaling presence as `recorder` for the consent banner.
 - Deferred: simulcast + per-subscriber layer selection (the real "slow subscriber" fix), last-N audio forwarding, single-port ICE mux, TURN.
 - **Verify:** the e2e call/scribe tests keep their checks. A new 3-bot test shows each client's upload ≈ 1× its tracks (not N×). A late subscriber's first video frame arrives within ~1s (PLI works). Measure server CPU per forwarded stream with 4–6 Chrome bots.
+
+**Built:** `sfu/router.ts` (forwarding core, unit-tested), `sfu/sfu.ts` (werift pub/sub PCs per client), signaling `media` messages, client rewritten from mesh to pub/sub, Scribe rewritten as a router sink (its own PeerConnections deleted). Verify: `npm run e2e:sfu` (`BOTS=5` for a bigger room), plus `e2e:call` and `e2e:scribe` unchanged in what they check.
+
+**Measured (M4, real Chrome bots, localhost):**
+
+| | 4 clients | 6 clients |
+|---|---|---|
+| Late joiner: all remote videos decoding after its sub PC connects | ~610ms | ~380ms |
+| One client's upload, many peers vs 1 peer | ×1.3–1.4 (mesh: ×3) | ×1.5 (mesh: ×5) |
+| Server CPU (signaling + SFU + Scribe) | 13–17% of a core, 28 streams | 23%, 66 streams |
+| Per forwarded stream | ~0.5% | ~0.34% |
+
+Upload growth is the encoder still ramping up, not duplication: each client always has exactly one outbound stream per track.
+
+**Bugs found on the way (all werift behaviours worth knowing):**
+- **Packets mutated in place.** `RTCRtpSender.sendRtp` rewrites SSRC/PT/seq/extensions on the packet object and keeps it in its NACK history, which is why the router clones per sink.
+- **Rejected m-lines vanish.** When a sendonly track is set inactive, werift answers with port 0, and Chrome stops the transceiver and drops it from `getTransceivers()`. The client now remembers `mid → track` itself, and every re-share gets a fresh transceiver (Chrome recycles the m-line slot).
+- **Leaked UDP sockets.** Without `bundlePolicy: "max-bundle"`, werift as offerer opened one ICE transport per m-line and never closed the extras: one leaked socket per client.
+- **Immortal RTCP loop.** A rejected transceiver is flagged `stopped` without stopping its receiver, then drops out of the list when the m-line is recycled. `pc.close()` never reaches it and its RTCP timer keeps the process alive forever (tests "passed" but never exited). Found by tracing live `Timeout` resources with `async_hooks`. Fixed by tracking every transceiver ourselves and stopping them on close.
+
+#### Critique
+- **No congestion feedback to publishers.** The server sends no REMB/TWCC, so Chrome's encoders sit near their start bitrate (~350–500 kbps). Video is soft (540p at 0.5 Mbps). Turning on werift's transport-cc broke forwarding, so it's off. *Fix:* generate REMB from the measured receive rate per publisher, or debug werift's TWCC. With simulcast, the SFU also has to pick a layer per subscriber from *their* estimate. That's the core of a real SFU, and the biggest gap here.
+- **No simulcast.** Every subscriber gets the same stream, so one weak subscriber can't get a lower-quality version, and raising the bitrate for strong ones would hurt weak ones. *At scale:* 3 simulcast layers, per-subscriber layer switching on keyframes (SSRC/seq/timestamp rewriting), which is exactly what mediasoup/LiveKit do.
+- **CPU is per packet, and today's packets are few.** 0.3–0.6% per stream at ~0.5 Mbps. At 1.5–2.5 Mbps, video packet rates are 3–5× higher and so is SRTP work in JS. Rough ceiling on one core: tens of streams, not hundreds. *At scale:* one worker process per CPU core, rooms sharded by meetingId across workers (and pipe transports between them for big rooms), or native SRTP.
+- **One process.** SFU, signaling and Scribe share an event loop, so a GC pause stalls media. *Next:* the SFU in a worker thread or process with the router interface over IPC.
+- **Every subscriber receives every track.** No last-N or pagination. Audio of 20 people = 20 downstreams per client. *Next:* forward only the top-3 speakers' audio (we already compute levels), and only video tiles on screen.
+- **Host candidates only, one UDP port per PC.** Fine on a LAN. *At scale:* single-port ICE mux (one UDP port for all clients, demux by ICE ufrag), public IP announced, TURN for restrictive networks.
+- **Protocol is untyped JSON in two places** (server TS, client JS). Drift is caught only by e2e tests. *Next:* shared types, or generate the client from a schema.
+
+**Interview Q:** *"Why two PeerConnections per client instead of one?"* → Each direction then has exactly one offerer: the client offers on publish, the server offers on subscribe. Renegotiation glare is impossible by construction instead of handled with perfect negotiation, and publishing a screen never waits on a subscription change. LiveKit does the same. The cost is two ICE/DTLS handshakes per client.
+
+**Interview Q:** *"A new person joins and sees black video for 5 seconds. Why, and how do you fix it?"* → Video decoders need a keyframe, and senders only produce them periodically or on request. When the SFU adds a subscriber to a video track it sends a PLI to the publisher, coalesced so ten joins don't produce ten keyframes (keyframes are big). Measured: first frames ~400–600ms after the subscriber connects.
+
+**Interview Q:** *"What does the SFU do on packet loss?"* → Two separate legs. Upstream loss (publisher → SFU): the SFU's receiver NACKs the publisher. Downstream loss (SFU → subscriber): the SFU answers the subscriber's NACK from its own ~128-packet history, so a lossy subscriber doesn't make the publisher retransmit to everyone. Audio isn't retransmitted (a late 20ms frame is useless), so it's concealed or dropped.
 
 ### 4. Live captions
 - `plugins/vad.ts`: energy VAD, 20ms frames, ~600ms hangover, 15s cap → `audio.utterance`.
@@ -199,7 +233,7 @@ Accepted for the POC: a lost audio packet = 20ms silence (no audio NACK/FEC/PLC)
 
 | Component | POC | ~1k concurrent meetings | ~1M users |
 |---|---|---|---|
-| Media | P2P mesh + Scribe peer | SFU (LiveKit/mediasoup); Scribe = server-side subscriber, clients upload once | Geo-distributed cascading SFUs, TURN fleet |
+| Media | Custom werift SFU, one process; Scribe = in-process router sink | SFU workers per core (mediasoup/LiveKit or ours + simulcast + BWE), rooms sharded by meetingId | Geo-distributed cascading SFUs, TURN fleet |
 | Ingest | werift in main process | Scribe workers scheduled per meeting | Per-region worker pools, autoscaled |
 | Bus | In-process EventEmitter | Redis Streams / NATS, stream per meeting | Kafka partitioned by `meetingId` |
 | Plugins | Same process | Stateless worker pools per topic, scale on queue lag | GPU pools, batched inference (vLLM/Triton) |
@@ -223,6 +257,8 @@ Accepted for the POC: a lost audio packet = 20ms silence (no audio NACK/FEC/PLC)
 | werift (pure TS WebRTC) | No native build issues on M4, debuggable | node-datachannel or SFU-native if CPU bound |
 | opusscript (libopus → WASM) over @discordjs/opus | Native binding has no Node 25 prebuild and failed to compile; WASM decodes at 15µs/packet, decoding straight to 16 kHz (no resampler) | Native libopus in a media worker, or let the SFU/STT provider take Opus directly |
 | Scribe answers, never offers | Glare impossible on the uplink by construction | Same pattern for any server-side media consumer |
+| Custom SFU on werift, two PCs per client | Understanding the forwarding core; one offerer per PC = no glare | mediasoup/LiveKit for simulcast + BWE; our router interface is the seam |
+| Scribe = in-process router sink, not a WebRTC peer | No extra upload, no extra DTLS/SRTP; attribution from track ownership | SFU track subscription from a separate Scribe worker |
 | Recorder hidden from grid, visible as indicator | Consent laws (two-party consent, GDPR, DPDP) | Same, plus audit log |
 
 ## Open questions

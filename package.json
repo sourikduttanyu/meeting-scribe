@@ -13,6 +13,7 @@
     "scenario": "node server/testing/scenario-cli.ts",
     "e2e:call": "node server/testing/e2e-call.ts",
     "e2e:scribe": "node server/testing/e2e-scribe.ts",
+    "e2e:sfu": "node server/testing/e2e-sfu.ts",
     "start": "node server/main.ts",
     "dev": "NODE_ENV=development node --watch server/main.ts"
   },

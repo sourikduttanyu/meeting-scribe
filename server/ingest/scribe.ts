@@ -1,26 +1,19 @@
 import OpusScript from "opusscript";
-import {
-  RTCPeerConnection,
-  useAudioLevelIndication,
-  useOPUS,
-  useSdesMid,
-  useVP8,
-  type MediaStreamTrack,
-  type RtpPacket,
-} from "werift";
+import type { RtpPacket } from "werift";
 import type { PublishInput } from "../core/pipeline.ts";
 import type { EmitOptions, Meeting } from "../core/types.ts";
 import type { ServerMsg, Signaling } from "../signaling.ts";
+import type { Router, RouterEvent, Subscription, TrackInfo } from "../sfu/router.ts";
 
-// The Scribe: a hidden recorder that joins each meeting through the same
-// signaling protocol as a browser (role "recorder"), over an in-process
-// transport. Moving it to its own process later only swaps the transport.
+// The Scribe: a hidden recorder for each meeting.
 //
-// Each participant opens one sendonly PeerConnection to the Scribe carrying
-// only their mic (+ screen while sharing). Identity is therefore structural:
-// every packet on that connection belongs to that participant.
+// Media: an in-process subscriber of the SFU router. No PeerConnection, no
+// extra upload from clients. Every track in the router is labelled with its
+// owner (participantId from signaling), so attribution is structural: no
+// diarization.
 //
-// Clients always offer, the Scribe always answers: no glare by construction.
+// Presence: it still joins signaling as role "recorder" (in-process
+// transport), so clients show the consent indicator exactly when it is there.
 //
 // Emits (source = participantId unless noted):
 //   audio.pcm         { samples: Int16Array }  16 kHz mono, 20 ms, non-durable
@@ -46,22 +39,15 @@ export interface ShareState {
 
 type Publish = (input: PublishInput, opts?: EmitOptions) => unknown;
 
-interface Participant {
-  id: string;
-  pc: RTCPeerConnection;
-  claimsScreen: boolean; // client meta says it is sharing
-  screenFlowing: boolean; // we are receiving screen RTP
-  sharing: boolean; // emitted state = claim ∧ media
-  pendingCandidates: unknown[] | null; // held until our answer is out; null once sent
-}
-
 export class Scribe {
   #signaling: Signaling;
+  #router: Router;
   #publish: Publish;
   #sessions = new Map<string, Session>();
 
-  constructor(signaling: Signaling, publish: Publish) {
+  constructor(signaling: Signaling, router: Router, publish: Publish) {
     this.#signaling = signaling;
+    this.#router = router;
     this.#publish = publish;
   }
 
@@ -69,7 +55,7 @@ export class Scribe {
   // rejoins meetings that are already running.
   ensure(meetingId: string): void {
     if (this.#sessions.has(meetingId)) return;
-    const session = new Session(meetingId, this.#signaling, this.#publish, () => this.#sessions.delete(meetingId));
+    const session = new Session(meetingId, this.#signaling, this.#router, this.#publish, () => this.#sessions.delete(meetingId));
     this.#sessions.set(meetingId, session);
   }
 
@@ -81,30 +67,33 @@ export class Scribe {
 class Session {
   #meetingId: string;
   #meeting: Meeting | null = null;
+  #router: Router;
   #publish: Publish;
-  #send: (msg: unknown) => void;
   #leave: () => void;
-  #participants = new Map<string, Participant>();
+  #subs = new Map<string, Subscription>(); // by track id
+  #sharing = new Map<string, string>(); // screen track id → owner, once media is seen
+  #unlisten: (() => void) | null = null;
   #closed = false;
   #onClosed: () => void;
 
-  constructor(meetingId: string, signaling: Signaling, publish: Publish, onClosed: () => void) {
+  constructor(meetingId: string, signaling: Signaling, router: Router, publish: Publish, onClosed: () => void) {
     this.#meetingId = meetingId;
+    this.#router = router;
     this.#publish = publish;
     this.#onClosed = onClosed;
     const handlers = signaling.connect({
       send: (raw) => this.#onServer(JSON.parse(raw) as ServerMsg),
       close: () => this.close(), // meeting ended
     });
-    this.#send = (msg) => handlers.onMessage(JSON.stringify(msg));
     this.#leave = () => handlers.onClose();
-    this.#send({ type: "join", meetingId, name: "Scribe", role: "recorder" });
+    handlers.onMessage(JSON.stringify({ type: "join", meetingId, name: "Scribe", role: "recorder" }));
   }
 
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    for (const p of this.#participants.values()) this.#drop(p);
+    this.#unlisten?.();
+    for (const id of [...this.#subs.keys()]) this.#unsubscribe(id);
     this.#emit("scribe.offline", "scribe", {});
     this.#leave();
     this.#onClosed();
@@ -122,123 +111,80 @@ class Session {
   }
 
   #onServer(msg: ServerMsg): void {
-    switch (msg.type) {
-      case "welcome":
-        this.#meeting = msg.meeting;
-        this.#emit("scribe.online", "scribe", {});
-        break;
-      case "peer-left": {
-        const p = this.#participants.get(msg.id);
-        if (p) this.#drop(p);
-        break;
-      }
-      case "signal":
-        this.#onSignal(msg.from, msg.data as SignalData).catch((err) => console.error("[scribe]", err));
-        break;
+    if (msg.type !== "welcome" || this.#unlisten) return;
+    this.#meeting = msg.meeting;
+    this.#emit("scribe.online", "scribe", {});
+    this.#unlisten = this.#router.on((ev) => this.#onRouter(ev));
+    for (const track of this.#router.tracks(this.#meetingId)) this.#subscribe(track);
+  }
+
+  #onRouter(ev: RouterEvent): void {
+    if (ev.track.meetingId !== this.#meetingId) return;
+    if (ev.type === "published") this.#subscribe(ev.track);
+    else this.#unsubscribe(ev.track.id);
+  }
+
+  #subscribe(track: TrackInfo): void {
+    if (track.source === "camera") return; // faces add little to "what happened"; not worth decoding
+    const sink = track.source === "mic" ? this.#audioSink(track.owner) : this.#screenSink(track);
+    const sub = this.#router.subscribe(track.id, sink);
+    if (sub) this.#subs.set(track.id, sub);
+  }
+
+  #unsubscribe(trackId: string): void {
+    this.#subs.get(trackId)?.close();
+    this.#subs.delete(trackId);
+    const owner = this.#sharing.get(trackId);
+    if (owner !== undefined) {
+      this.#sharing.delete(trackId);
+      this.#emit("screen.share.stop", owner, { by: owner } satisfies ShareState);
     }
   }
 
-  async #onSignal(from: string, data: SignalData): Promise<void> {
-    const p = this.#participants.get(from) ?? this.#connect(from);
-    if (data.meta) {
-      p.claimsScreen = !!data.meta.screen;
-      this.#syncShare(p);
-    } else if (data.description?.type === "offer") {
-      await p.pc.setRemoteDescription(data.description);
-      await p.pc.setLocalDescription(await p.pc.createAnswer());
-      this.#signal(from, { description: p.pc.localDescription });
-      // werift gathers during setLocalDescription; candidates sent before the
-      // answer would hit a PC with no remote description and be rejected.
-      for (const c of p.pendingCandidates ?? []) this.#signal(from, { candidate: c });
-      p.pendingCandidates = null;
-    } else if (data.candidate) {
-      await p.pc.addIceCandidate(data.candidate);
-    }
-  }
-
-  #signal(to: string, data: unknown): void {
-    this.#send({ type: "signal", to, data });
-  }
-
-  #connect(id: string): Participant {
-    const pc = new RTCPeerConnection({
-      codecs: { audio: [useOPUS()], video: [useVP8()] },
-      headerExtensions: { audio: [useSdesMid(), useAudioLevelIndication()], video: [useSdesMid()] },
-    });
-    const p: Participant = { id, pc, claimsScreen: false, screenFlowing: false, sharing: false, pendingCandidates: [] };
-    this.#participants.set(id, p);
-    pc.onIceCandidate.subscribe((c) => {
-      if (!c) return;
-      if (p.pendingCandidates) p.pendingCandidates.push(c.toJSON());
-      else this.#signal(id, { candidate: c.toJSON() });
-    });
-    pc.onTrack.subscribe((track) => (track.kind === "audio" ? this.#onAudio(p, track) : this.#onScreen(p, track)));
-    return p;
-  }
-
-  #onAudio(p: Participant, track: MediaStreamTrack): void {
+  #audioSink(owner: string) {
     const decoder = new OpusScript(PCM_RATE, 1); // libopus resamples internally: decode straight to 16 kHz
     let anchor: { rtp: number; t: number } | null = null;
 
-    track.onReceiveRtp.subscribe((rtp: RtpPacket, ext?: Record<string, unknown>) => {
-      if (!this.#meeting?.startedAt || rtp.payload.length === 0) return;
-      // Capture time from the RTP timestamp, not arrival: jitter and bursts
-      // don't smear the timeline. Anchored to our clock on the first packet.
-      const arrival = this.#now();
-      let t = anchor ? anchor.t + rtpDelta(rtp.header.timestamp, anchor.rtp) / (RTP_CLOCK / 1000) : arrival;
-      if (!anchor || Math.abs(t - arrival) > REANCHOR_MS) {
-        anchor = { rtp: rtp.header.timestamp, t: arrival };
-        t = arrival;
-      }
-      t = Math.round(t);
+    return {
+      write: (rtp: RtpPacket, ext?: Record<string, unknown>) => {
+        if (!this.#meeting?.startedAt || rtp.payload.length === 0) return;
+        // Capture time from the RTP timestamp, not arrival: jitter and bursts
+        // don't smear the timeline. Anchored to our clock on the first packet.
+        const arrival = this.#now();
+        let t = anchor ? anchor.t + rtpDelta(rtp.header.timestamp, anchor.rtp) / (RTP_CLOCK / 1000) : arrival;
+        if (!anchor || Math.abs(t - arrival) > REANCHOR_MS) {
+          anchor = { rtp: rtp.header.timestamp, t: arrival };
+          t = arrival;
+        }
+        t = Math.round(t);
 
-      const level = ext?.[LEVEL_URI] as { v: boolean; level: number } | undefined;
-      if (level) this.#emit("audio.level", p.id, { dbov: -level.level, voice: level.v } satisfies AudioLevel, t, false);
+        const level = ext?.[LEVEL_URI] as { v: boolean; level: number } | undefined;
+        if (level) this.#emit("audio.level", owner, { dbov: -level.level, voice: level.v } satisfies AudioLevel, t, false);
 
-      let pcm: Buffer;
-      try {
-        pcm = decoder.decode(rtp.payload);
-      } catch {
-        return; // corrupt packet: drop; the gap stays silent
-      }
-      const samples = new Int16Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength));
-      this.#emit("audio.pcm", p.id, { samples } satisfies AudioPcm, t, false);
-    });
+        let pcm: Buffer;
+        try {
+          pcm = decoder.decode(rtp.payload);
+        } catch {
+          return; // corrupt packet: drop; the gap stays silent
+        }
+        const samples = new Int16Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength));
+        this.#emit("audio.pcm", owner, { samples } satisfies AudioPcm, t, false);
+      },
+    };
   }
 
-  // Frames are decoded in phase 6. Here only "is media actually flowing".
-  #onScreen(p: Participant, track: MediaStreamTrack): void {
-    track.onReceiveRtp.subscribe(() => {
-      if (p.screenFlowing) return;
-      p.screenFlowing = true;
-      this.#syncShare(p);
-    });
+  // Frames are decoded in phase 6. Here: a share starts when screen media
+  // actually arrives (not when it is announced) and stops when the track is
+  // unpublished.
+  #screenSink(track: TrackInfo) {
+    return {
+      write: () => {
+        if (this.#sharing.has(track.id)) return;
+        this.#sharing.set(track.id, track.owner);
+        this.#emit("screen.share.start", track.owner, { by: track.owner } satisfies ShareState);
+      },
+    };
   }
-
-  // Share starts when the client says so AND screen RTP arrives (a claim with
-  // no media is not a share). It stops when the claim is withdrawn: RTP can
-  // legitimately pause on a static screen, and straggler packets after stop
-  // must not restart it.
-  #syncShare(p: Participant): void {
-    if (!p.claimsScreen) p.screenFlowing = false;
-    const sharing = p.claimsScreen && p.screenFlowing;
-    if (sharing === p.sharing) return;
-    p.sharing = sharing;
-    this.#emit(sharing ? "screen.share.start" : "screen.share.stop", p.id, { by: p.id } satisfies ShareState);
-  }
-
-  #drop(p: Participant): void {
-    p.claimsScreen = false;
-    this.#syncShare(p);
-    p.pc.close().catch(() => {});
-    this.#participants.delete(p.id);
-  }
-}
-
-interface SignalData {
-  meta?: { screen?: string | null };
-  description?: { type: "offer" | "answer"; sdp: string };
-  candidate?: Parameters<RTCPeerConnection["addIceCandidate"]>[0];
 }
 
 // Signed difference of two 32-bit RTP timestamps (handles wraparound).

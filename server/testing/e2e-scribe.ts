@@ -44,13 +44,13 @@ try {
   const [alice, bob] = bots as [L3Bot, L3Bot];
   await until("Scribe online + both uplinks connected", () => Promise.all(bots.map((b) => b.page.evaluate(() => {
     const r = (window as any).__room;
-    return r.recorderPresent && r.scribeState === "connected";
+    return r.recorderPresent && r.pub?.connectionState === "connected";
   }))), (v) => v.every(Boolean));
   const ids = { alice: await alice.page.evaluate(() => (window as any).__room.selfId), bob: await bob.page.evaluate(() => (window as any).__room.selfId) };
   const name = (pid: string | null) => (pid === ids.alice ? "alice" : pid === ids.bob ? "bob" : String(pid));
   const started = app.log.getMeeting(id)!.startedAt!;
   const mt = () => Date.now() - started; // meeting time
-  step("Scribe online, both participants' sendonly uplinks connected");
+  step("Scribe online, both participants publishing to the SFU");
 
   // Turn script, driven by the real mute button (M).
   await bob.page.keyboard.press("m");
