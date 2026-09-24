@@ -20,7 +20,7 @@ Node server
   signaling    rooms, roles (participant | recorder); recorder never listed to clients
   ingest/      Scribe peer (werift): RTP → Opus decode → PCM16 16k per speaker
                VP8 → ffmpeg → 1fps JPEG (PLI for keyframes)
-  core/        event bus + append-only event log (SQLite) + plugin host
+  core/        types, topics (NATS-style match), log (SQLite, append-only), pipeline (bus + plugin host)
   plugins/     vad → whisper → transcript; screen → ocr/vision; summarizer; qa
   providers/   STT / LLM / Vision adapters (whisper.cpp, ollama, deepgram, gemini, ...)
 ```
@@ -35,9 +35,9 @@ Node server
 ```ts
 interface Plugin {
   name: string;
-  subscribes: string[];                       // topic globs: "audio.utterance", "screen.*"
-  queue?: { max: number; drop: "oldest" | "newest" | "block" };
-  init?(ctx: PluginContext): Promise<void>;
+  subscribes: string[];                       // NATS-style: "screen.*" = one segment, "audio.>" = rest
+  queue?: { max: number; drop: "oldest" | "newest" | "never" };
+  init?(): Promise<void>;
   handle(ev: MeetingEvent, ctx: PluginContext): Promise<void>;
   close?(): Promise<void>;
 }
@@ -47,12 +47,14 @@ Rules:
 - Plugins talk **only** through topics (`ctx.emit` / `ctx.query`). No plugin imports another plugin.
 - Plugins are stateless across meetings; per-meeting state keyed by `meetingId` (enables partitioning by meetingId at scale).
 - Heavy compute goes through a `providers/` adapter (out-of-process model server), never inline.
-- Audio queues use `block` (never drop speech); screen frames use `drop: "oldest"`.
+- Speech queues use `drop: "never"`; screen frames use `drop: "oldest"`. High-volume raw topics (`audio.pcm`) are emitted with `{ durable: false }`.
+- Plugins must not rely on receiving their own events (the pipeline skips self-delivery).
 - Topic names: `<domain>.<kind>` — `audio.pcm`, `audio.utterance`, `transcript.final`, `screen.frame`, `screen.text`, `summary.chunk`, `qa.answer`.
 
 ## Stack
 
-- Node 25 + TypeScript (ESM). werift for server-side WebRTC. better-sqlite3 for the log.
+- Node 25 + TypeScript (ESM), run directly via type stripping — erasable syntax only (no `enum`, no parameter properties). `tsc` (TS 7) typechecks only.
+- Built-ins over deps: `node:test`, `node:sqlite`. werift for server-side WebRTC.
 - whisper.cpp via `whisper-server` (Homebrew), model `models/ggml-small.en.bin`.
 - Ollama at `localhost:11434`, default model `qwen2.5:7b` (`llama3.2:1b` for fast/cheap calls).
 - ffmpeg (Homebrew) for VP8 decode.
@@ -77,3 +79,10 @@ Memory budget (16GB): whisper small.en ~1GB + qwen2.5:7b ~5GB + Chrome tabs. Don
 ## Consent
 
 The recorder is hidden from the video grid, **not** from users: the room UI always shows an "AI notes / recording on" indicator and a join notice. Don't remove it.
+
+## Commands
+
+```sh
+npm run check      # typecheck + tests
+npm test           # tests only (node:test)
+```

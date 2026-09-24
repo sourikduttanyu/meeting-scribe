@@ -15,7 +15,7 @@ Target: "pseudo-realtime" — captions ≤ ~2s after an utterance ends, summarie
 | Phase | State |
 |---|---|
 | 0. Machine setup | ✅ done |
-| 1. Scaffold + core | ⬜ |
+| 1. Scaffold + core | ✅ done |
 | 2. Call + signaling | ⬜ |
 | 3. Scribe ingest (audio) | ⬜ |
 | 4. Live captions | ⬜ |
@@ -29,10 +29,25 @@ Target: "pseudo-realtime" — captions ≤ ~2s after an utterance ends, summarie
 - whisper-cpp 1.9.4 (Homebrew), `models/ggml-small.en.bin`, Ollama with `qwen2.5:7b`, ffmpeg.
 - Verified: whisper-cli transcribed a `say`-generated clip exactly; qwen2.5 summarized it. Cold start ~17s (whisper) / ~22s (LLM) — servers must stay warm.
 
-### 1. Scaffold + core
-- Node/TS ESM project: `server/{core,ingest,plugins,providers}`, `web/`, `plugins.config.json`.
-- `core/bus.ts` (topic pub/sub with glob match), `core/log.ts` (SQLite append-only events), `core/plugin-host.ts` (per-plugin queues + drop policies), `core/types.ts`.
-- **Verify:** unit test — a dummy plugin subscribed to `test.*` receives events in order, emits a derived event, and it lands in the log; `query({from,to})` returns the right slice.
+### 1. Scaffold + core ✅
+- Node 25 runs `.ts` directly (type stripping) — no build step; `tsc` (TS 7) only typechecks. Tests on `node:test`, storage on built-in `node:sqlite`. Zero runtime dependencies.
+- `core/types.ts` (contracts), `core/topics.ts` (NATS-style `*` / `>` matching), `core/log.ts` (SQLite append-only log, WAL), `core/pipeline.ts` (bus + plugin host: per-plugin FIFO queues, drop policies, meeting-scoped ctx, no self-delivery, error isolation, `drain()`, `stats()`).
+- **Verify:** ✅ `npm run check` — 11 tests: ordered delivery, derived events logged, time-range slicing, loop prevention, meeting isolation, non-durable events, `oldest`/`never` policies, throwing plugin isolation, unknown meeting rejected.
+
+**Critique**
+- *Doc correction:* planned a `block` drop policy; an in-process `publish` can't block without making every producer async. Shipped `never` (never drop, warn over max). True backpressure needs a pull-based broker.
+- *No delivery guarantee across crashes.* Log is written before dispatch, but there are no consumer offsets — if the process dies mid-queue, those plugin deliveries are lost and nothing resumes them. At scale: consumer groups with committed offsets (Kafka/Redis Streams) → at-least-once, and handlers made idempotent via `event.id`.
+- *Serial per plugin = latency stacks.* Two speakers' utterances wait in one STT queue. Fix later: concurrency per partition key `(meetingId, source)` — ordered per speaker, parallel across speakers. Same reasoning as choosing a Kafka partition key.
+- *`never` = unbounded memory.* Sustained STT lag → OOM. Needs `stats()` exported as a metric + alert/autoscale on queue depth.
+- *Sync SQLite insert on the publish hot path.* Fine at POC rates (a few events/s per meeting once `audio.pcm` is non-durable); at scale batch writes or hand off to the broker.
+- *Topic filter runs in JS* after the SQL time-range scan. OK for one meeting (~10k events / 2h); add a topic index or materialized views (e.g. transcript-only table) if Q&A queries get hot.
+- *No event schema version.* `data` shape will evolve; add `v` to events before anything is persisted long-term.
+- Meeting cache in `Pipeline` never evicts — fine for POC, leak on a long-running server.
+
+**Interview Q&A**
+- *Why an event log instead of plugins writing their own tables?* Single source of truth, replay (a new "action items" plugin can run over last month's meetings), audit/debugging. Cost: storage and schema evolution.
+- *How do you keep one bad plugin from taking down the pipeline?* Isolated queue per plugin, errors caught per event, drop policy chosen per data type (freshness vs completeness). Out-of-process workers next.
+- *Why is `ctx` bound to a meeting?* Tenant isolation by construction, and it makes `meetingId` the natural partition key for scaling out.
 
 ### 2. Call + signaling
 - WebSocket signaling server; rooms with `meetingId`, `startedAt`, `durationMs`; roles `participant | recorder`.
