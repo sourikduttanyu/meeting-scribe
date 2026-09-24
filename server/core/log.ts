@@ -14,7 +14,7 @@ export class EventLog {
       CREATE TABLE IF NOT EXISTS meetings (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
-        started_at INTEGER NOT NULL,
+        started_at INTEGER,
         duration_ms INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS events (
@@ -36,10 +36,16 @@ export class EventLog {
       .run(m.id, m.title, m.startedAt, m.durationMs);
   }
 
+  // Idempotent: only the first call sets the start time.
+  startMeeting(id: string, at: number): Meeting | undefined {
+    this.#db.prepare("UPDATE meetings SET started_at = ? WHERE id = ? AND started_at IS NULL").run(at, id);
+    return this.getMeeting(id);
+  }
+
   getMeeting(id: string): Meeting | undefined {
     const row = this.#db
       .prepare("SELECT id, title, started_at, duration_ms FROM meetings WHERE id = ?")
-      .get(id) as { id: string; title: string; started_at: number; duration_ms: number } | undefined;
+      .get(id) as { id: string; title: string; started_at: number | null; duration_ms: number } | undefined;
     return row && { id: row.id, title: row.title, startedAt: row.started_at, durationMs: row.duration_ms };
   }
 

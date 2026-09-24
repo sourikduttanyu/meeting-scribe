@@ -1,7 +1,7 @@
 export interface Meeting {
   id: string;
   title: string;
-  startedAt: number; // epoch ms
+  startedAt: number | null; // epoch ms; null until the first participant joins
   durationMs: number; // fixed length; "first half" etc. resolve against this
 }
 

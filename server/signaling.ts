@@ -44,6 +44,7 @@ interface Conn extends PeerInfo {
 
 export interface SignalingDeps {
   getMeeting(id: string): Meeting | undefined;
+  startMeeting(id: string): Meeting; // first participant join starts the clock
   onPresence(meeting: Meeting, peer: PeerInfo, kind: "join" | "leave"): void;
 }
 
@@ -72,7 +73,9 @@ export class Signaling {
           if (conn) return send({ type: "error", message: "already joined" });
           const meeting = this.#deps.getMeeting(msg.meetingId);
           if (!meeting) return send({ type: "error", message: "unknown meeting" });
-          if (Date.now() > meeting.startedAt + meeting.durationMs) return send({ type: "error", message: "meeting ended" });
+          if (meeting.startedAt !== null && Date.now() > meeting.startedAt + meeting.durationMs) {
+            return send({ type: "error", message: "meeting ended" });
+          }
           conn = {
             id: randomUUID().slice(0, 8),
             name: String(msg.name || "guest").slice(0, 40),
@@ -108,6 +111,11 @@ export class Signaling {
   #join(conn: Conn): void {
     const room = this.#rooms.get(conn.meeting.id) ?? new Map<string, Conn>();
     this.#rooms.set(conn.meeting.id, room);
+    if (conn.role === "participant" && conn.meeting.startedAt === null) {
+      const started = this.#deps.startMeeting(conn.meeting.id);
+      conn.meeting = started;
+      for (const c of room.values()) c.meeting = started; // e.g. a recorder that joined early
+    }
     const others = [...room.values()];
     const recorder = others.find((c) => c.role === "recorder");
     room.set(conn.id, conn);

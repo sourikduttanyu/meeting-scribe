@@ -248,7 +248,7 @@ function setStatus(text) {
 
 function startClock() {
   const tick = () => {
-    const left = Math.max(0, meeting.startedAt + meeting.durationMs - Date.now());
+    const left = Math.max(0, (meeting.startedAt ?? Date.now()) + meeting.durationMs - Date.now());
     const m = Math.floor(left / 60_000);
     const s = String(Math.floor(left / 1000) % 60).padStart(2, "0");
     $("#clock").textContent = `${m}:${s} left`;

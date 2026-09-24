@@ -50,9 +50,21 @@ test("rejects bad meeting duration", async () => {
 
 test("join, relay, hidden recorder, leave, presence events", async () => {
   const { id } = await createMeeting();
+  const meta = async () => (await (await fetch(`${app.url}/api/meetings/${id}`)).json()) as { startedAt: number | null };
+  assert.equal((await meta()).startedAt, null, "clock not started at creation");
+
+  // A recorder joining first must not start the clock.
+  const early = await client();
+  early.send({ type: "join", meetingId: id, name: "EarlyScribe", role: "recorder" });
+  await early.next("welcome");
+  assert.equal((await meta()).startedAt, null);
+  early.close();
+
   const a = await client();
   a.send({ type: "join", meetingId: id, name: "Alice" });
   const wa = await a.next("welcome");
+  assert.ok(wa.meeting.startedAt !== null, "first participant starts the clock");
+  assert.equal((await meta()).startedAt, wa.meeting.startedAt);
   assert.deepEqual(wa.peers, []);
   assert.equal(wa.recorder, null);
 
@@ -94,6 +106,7 @@ test("join, relay, hidden recorder, leave, presence events", async () => {
     ["presence.join:Alice", "presence.join:Bob", "presence.join:Carol", "presence.leave:Bob"],
   );
   assert.ok(presence.every((e) => e.t >= 0 && e.t < 60_000));
+  assert.ok(presence[0]!.t < 100, `first join is ~t=0, got ${presence[0]!.t}`);
   for (const x of [a, c, rec]) x.close();
 });
 

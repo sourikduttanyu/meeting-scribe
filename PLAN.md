@@ -84,7 +84,7 @@ Target: "pseudo-realtime" — captions ≤ ~2s after an utterance ends, summarie
 - *No TURN.* Only STUN → calls fail behind symmetric NAT / strict corporate firewalls (commonly cited ~10–20% of real users). Fix: coturn or a managed TURN; test by forcing `iceTransportPolicy: "relay"`.
 - *No auth.* Anyone with the 8-hex meeting id (32 bits) can join, including as `role: "recorder"`. Fix: signed join tokens (JWT with meetingId + role), recorder role only issuable by the server.
 - *Signaling is in-memory, single process.* Can't scale horizontally as is. Fix: route by `meetingId` (consistent hashing / sticky) so a room lives on one node, or Redis pub/sub for cross-node relay.
-- *`startedAt` = creation time,* not first join. If people join 3 min late, "first 5 minutes" is mostly silence. Open question: start clock on first join?
+- ~~*`startedAt` = creation time*~~ → **fixed:** clock starts at the first *participant* join (a recorder joining early doesn't start it); end timer set then. E2E: first join now at t≈1 ms (was ~4.5 s). Remaining gap: a meeting nobody ever joins never expires — needs a creation-time TTL.
 - *End timers live in memory;* a restart forgets them (joins after end are still rejected by the `startedAt + durationMs` check, but connected users aren't kicked).
 - *Client is plain JS* duplicating protocol types → drift risk. Cheap fix: `// @ts-check` + JSDoc `import("../server/signaling.ts")` types so `tsc` checks the browser code too.
 - *L3 e2e is timing-based* (polls with timeouts) → potential flakiness on a loaded machine.

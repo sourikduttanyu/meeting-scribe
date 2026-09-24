@@ -34,20 +34,29 @@ export interface App {
 
 export async function startApp(opts: AppOptions = {}): Promise<App> {
   const log = new EventLog(opts.dbPath);
+  const endTimers = new Set<NodeJS.Timeout>();
   const pipeline = new Pipeline(log);
   const signaling = new Signaling({
     getMeeting: (id) => log.getMeeting(id),
+    startMeeting: (id) => {
+      const meeting = log.startMeeting(id, Date.now())!;
+      const timer = setTimeout(() => {
+        endTimers.delete(timer);
+        signaling.end(meeting.id);
+      }, meeting.startedAt! + meeting.durationMs - Date.now());
+      endTimers.add(timer);
+      return meeting;
+    },
     // Ingest edge: the only place wall clock becomes event time.
     onPresence: (meeting, peer, kind) =>
       pipeline.publish({
         meetingId: meeting.id,
         topic: `presence.${kind}`,
-        t: Date.now() - meeting.startedAt,
+        t: Date.now() - meeting.startedAt!, // participants only join started meetings
         source: peer.id,
         data: { name: peer.name, bot: peer.bot },
       }),
   });
-  const endTimers = new Set<NodeJS.Timeout>();
   const bots: { close(): Promise<void> }[] = [];
 
   const server = createServer((req, res) => {
@@ -69,15 +78,10 @@ export async function startApp(opts: AppOptions = {}): Promise<App> {
       const meeting = {
         id: randomUUID().slice(0, 8),
         title: String(body.title || "Untitled meeting").slice(0, 120),
-        startedAt: Date.now(),
+        startedAt: null, // clock starts at first participant join
         durationMs,
       };
       log.createMeeting(meeting);
-      const timer = setTimeout(() => {
-        endTimers.delete(timer);
-        signaling.end(meeting.id);
-      }, durationMs);
-      endTimers.add(timer);
       return json(res, 201, meeting);
     }
 

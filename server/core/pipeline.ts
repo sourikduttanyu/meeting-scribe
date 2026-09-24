@@ -78,7 +78,7 @@ export class Pipeline {
     if (!m) {
       m = this.#log.getMeeting(id);
       if (!m) throw new Error(`unknown meeting: ${id}`);
-      this.#meetings.set(id, m);
+      if (m.startedAt !== null) this.#meetings.set(id, m); // only cache once immutable
     }
     return m;
   }
