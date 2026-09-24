@@ -19,7 +19,7 @@ Target: "pseudo-realtime" — captions ≤ ~2s after an utterance ends, summarie
 | 1.5 Test harness (scenarios, TTS, L0 bot) | ✅ done |
 | 2. Call + signaling | ✅ done |
 | 2.1 UI/UX overhaul | ✅ done |
-| 3. Scribe ingest (audio) | ⬜ |
+| 3. Scribe ingest (audio + share state) | ⬜ |
 | 4. Live captions | ⬜ |
 | 5. Summaries + Q&A | ⬜ |
 | 6. Screen understanding | ⬜ |
@@ -114,10 +114,13 @@ The new join path shifted timing so both peers created their connection simultan
 - The Timeline panel is client-local (built from signaling events), so a late joiner's timeline starts empty. Phase 5 replaces it with the server event log — the real product.
 - Google Fonts is an external dependency for an otherwise self-contained app; self-host the two fonts for offline demos.
 
-### 3. Scribe ingest (audio)
-- `ingest/scribe.ts`: werift peer; each client opens a `sendonly` PeerConnection to it on join.
+### 3. Scribe ingest (audio + share state)
+- `ingest/scribe.ts`: werift peer; each client opens a `sendonly` PeerConnection to it on join (mic + screen when sharing).
 - Opus RTP → decode (`@discordjs/opus`) → 48k→16k mono PCM16 → `audio.pcm` per speaker.
-- **Verify:** after a 30s call, `data/<meeting>/<speaker>.wav` plays back clean for each participant, with correct duration.
+- **Share state as events, not absence.** Scribe emits durable `screen.share.start {by}` / `screen.share.stop {by}` when a screen track actually starts or stops producing RTP. The source of truth is the media the Scribe received, not what the client claims. Q&A then answers "was anything shared in the first 10 min?" from intervals ("nothing shared 0:00–4:12, Alice shared 4:12–9:30").
+- **Coverage events.** `scribe.online` / `scribe.offline` (durable). This separates "nothing happened" from "Scribe wasn't listening", so Q&A can say "I wasn't recording 2:00–3:10" instead of inventing a quiet stretch.
+- The screen track is received and its state tracked here. Decoding frames is phase 6.
+- **Verify:** after a 30s call, `data/<meeting>/<speaker>.wav` plays back clean for each participant, with correct duration. Share → stop yields exactly one start/stop pair, with `t` within 1s of the click. Killing the Scribe mid-call leaves an `offline`/`online` gap in the log.
 
 ### 4. Live captions
 - `plugins/vad.ts`: energy VAD, 20ms frames, ~600ms hangover, 15s cap → `audio.utterance`.
@@ -132,7 +135,7 @@ The new join path shifted timing so both peers created their connection simultan
 - **Verify:** scripted 5-min meeting (TTS audio) → "what happened in the first 2 minutes?" answer only mentions content from 0–120s.
 
 ### 6. Screen understanding
-- Scribe: VP8 → ffmpeg → 1fps JPEG; dHash change detection → `screen.frame` only on change.
+- Scribe: VP8 → ffmpeg → 1fps JPEG (PLI on share start for a keyframe); dHash change detection → `screen.frame` only on change. Frames only flow between `screen.share.start` and `stop` (phase 3).
 - `plugins/screen-ocr.ts` (Tesseract) → `screen.text`; optional Gemini Live vision provider.
 - **Verify:** switching slides during share produces one `screen.text` event per slide, with readable text.
 
