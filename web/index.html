@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Meeting Scribe</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <h1>Meeting Scribe</h1>
+  <p class="muted">Create a meeting with a fixed length. Share the link with the other person.</p>
+  <form id="join-form">
+    <input name="title" placeholder="Title" value="Q3 budget review" required>
+    <label class="row">Length (minutes) <input name="minutes" type="number" min="1" max="240" value="30" required></label>
+    <button class="primary">Create meeting</button>
+  </form>
+</main>
+<script type="module">
+  const form = document.querySelector("#join-form");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const data = new FormData(form);
+    const res = await fetch("/api/meetings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: data.get("title"), durationMs: Number(data.get("minutes")) * 60_000 }),
+    });
+    const meeting = await res.json();
+    if (!res.ok) return alert(meeting.error);
+    location.href = `/room.html?m=${meeting.id}`;
+  });
+</script>
+</body>
+</html>

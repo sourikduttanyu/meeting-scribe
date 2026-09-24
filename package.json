@@ -10,10 +10,18 @@
     "test": "node --test \"server/**/*.test.ts\"",
     "typecheck": "tsc",
     "check": "npm run typecheck && npm test",
-    "scenario": "node server/testing/scenario-cli.ts"
+    "scenario": "node server/testing/scenario-cli.ts",
+    "e2e:call": "node server/testing/e2e-call.ts",
+    "start": "node server/main.ts",
+    "dev": "NODE_ENV=development node --watch server/main.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.2",
+    "@types/ws": "^8.18.1",
+    "playwright-core": "^1.63.0",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
   }
 }

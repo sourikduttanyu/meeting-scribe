@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Meeting Scribe · Room</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <div class="row">
+    <h1 id="title">Meeting</h1>
+    <span class="spacer"></span>
+    <span id="clock" class="muted"></span>
+  </div>
+  <div id="ai-banner" role="status">● AI notes on — this meeting is being transcribed and summarized.</div>
+
+  <form id="join-form">
+    <input name="name" placeholder="Your name" required>
+    <button class="primary">Join</button>
+  </form>
+
+  <div id="controls" class="row" hidden>
+    <button id="mic">Mic</button>
+    <button id="cam">Camera</button>
+    <button id="share">Share screen</button>
+    <button id="add-bot" hidden>+ Add test bot</button>
+    <span class="spacer"></span>
+    <span id="status" class="muted"></span>
+    <button id="leave">Leave</button>
+  </div>
+  <div id="grid"></div>
+</main>
+<script type="module" src="/room.js"></script>
+</body>
+</html>

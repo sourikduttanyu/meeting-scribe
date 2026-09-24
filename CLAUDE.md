@@ -61,7 +61,7 @@ Scenarios (`scenarios/*.json`) are scripted meetings = ground truth for every le
 | L0 | `server/testing/l0-bot.ts` | publishes `transcript.final` / `screen.text` / `presence.*` | ✅ |
 | L1 | audio bot | `audio.pcm` from rendered WAVs | phase 4 |
 | L2 | werift WebRTC client | signaling + Scribe, like a real user | phase 3 |
-| L3 | Playwright + Chrome fake media | browser UI | phase 2 |
+| L3 | `server/testing/l3-bot.ts` (installed Chrome, fake media) | the real web UI | ✅ |
 
 - Event shapes the bots emit are **contracts** real stages must match (`TranscriptFinal`, `ScreenText` in `l0-bot.ts`).
 - Voices: macOS `say` → 16 kHz mono WAV, cached in `data/tts/` by hash(voice, text).
@@ -102,4 +102,7 @@ The recorder is hidden from the video grid, **not** from users: the room UI alwa
 npm run check      # typecheck + tests
 npm test           # tests only (node:test)
 npm run scenario -- scenarios/budget-review.json   # render voices, replay via L0, print timeline
+npm start          # server on :3000
+npm run dev        # + watch mode + /dev routes ("+ Add test bot" button)
+npm run e2e:call   # two headless Chrome bots: connect, recorder banner, screen share
 ```

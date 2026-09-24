@@ -10,6 +10,10 @@ export interface ScreenText {
   text: string;
   image: string;
 }
+export interface Presence {
+  name: string;
+  bot: boolean;
+}
 
 // L0 bot: skips media entirely and publishes what the ASR/OCR stages WOULD
 // emit, stamped with scenario time. No wall clock → a 2 h meeting replays
@@ -20,6 +24,7 @@ export function runL0(
   meetingId: string,
   speechMs: (who: string, text: string) => number = (_w, text) => estimateSpeechMs(text),
 ): void {
+  const names = new Map(scenario.participants.map((p) => [p.id, p.name ?? p.id]));
   for (const line of scenario.script) {
     const base = { meetingId, t: line.at, source: line.who };
     if ("say" in line) {
@@ -28,10 +33,9 @@ export function runL0(
     } else if ("screen" in line) {
       const data: ScreenText = { text: line.text ?? "", image: line.screen };
       pipeline.publish({ ...base, topic: "screen.text", data });
-    } else if ("join" in line) {
-      pipeline.publish({ ...base, topic: "presence.join", data: null });
     } else {
-      pipeline.publish({ ...base, topic: "presence.leave", data: null });
+      const data: Presence = { name: names.get(line.who)!, bot: true };
+      pipeline.publish({ ...base, topic: "join" in line ? "presence.join" : "presence.leave", data });
     }
   }
 }

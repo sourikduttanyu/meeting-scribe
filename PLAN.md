@@ -17,7 +17,7 @@ Target: "pseudo-realtime" — captions ≤ ~2s after an utterance ends, summarie
 | 0. Machine setup | ✅ done |
 | 1. Scaffold + core | ✅ done |
 | 1.5 Test harness (scenarios, TTS, L0 bot) | ✅ done |
-| 2. Call + signaling | ⬜ |
+| 2. Call + signaling | ✅ done |
 | 3. Scribe ingest (audio) | ⬜ |
 | 4. Live captions | ⬜ |
 | 5. Summaries + Q&A | ⬜ |
@@ -71,11 +71,29 @@ Target: "pseudo-realtime" — captions ≤ ~2s after an utterance ends, summarie
 - *Why event time instead of wall clock?* Replayability and testability — the same reason stream processors (Flink, Kafka Streams) separate event time from processing time. A 2h meeting becomes a 2 ms test.
 - *Why a test pyramid of bots?* Cost vs fidelity: most coverage at L0/L1 (instant, deterministic), a thin layer of real-time L2/L3 end-to-end runs.
 
-### 2. Call + signaling
-- WebSocket signaling server; rooms with `meetingId`, `startedAt`, `durationMs`; roles `participant | recorder`.
-- `web/room.html`: P2P camera + mic + screen share; "AI notes on" banner.
-- **Verify:** two L3 Playwright bots (Chrome fake media from rendered WAVs) connect and exchange audio/video; screen share works manually; recorder role never appears in participant list.
-- Dev-only "+ Add test bot" button (`POST /dev/meetings/:id/bots`) so a human can call a bot.
+### 2. Call + signaling ✅
+- `server/signaling.ts`: rooms, roles, relay — pure logic over an injected `Transport` (testable without sockets). `server/app.ts`: HTTP (static, `POST/GET /api/meetings`), `ws` at `/ws`, meeting end timers, dev routes. `server/main.ts`: entry.
+- Recorder is never in `peers` / `peer-joined`, but announced as `recorder` / `recorder-joined` → the "AI notes on" banner reflects whether a recorder is actually present.
+- Signaling emits `presence.join/leave` (`{name, bot}`) into the pipeline at `t = now - startedAt` — same contract as the L0 bot.
+- `web/room.js`: P2P mesh, **perfect negotiation** (polite = lower id), camera/screen labelled via `{meta: {camera, screen}}` stream ids, mic/cam toggles, countdown to fixed end.
+- L3 bot (`testing/l3-bot.ts`): installed Chrome via playwright-core, fake camera + rendered WAV as mic. Dev "+ Add test bot" button → `POST /dev/meetings/:id/bots` (only with `NODE_ENV=development`).
+- **Verify:** ✅ 19 unit/integration tests (signaling over real WS: join, relay, hidden recorder, leave, presence, errors, path traversal). ✅ `npm run e2e:call`: two Chrome bots connect in ~2 s with audio+video bytes flowing, recorder joins → banner on and still 1 peer, mid-call screen share renegotiates (tile added) and stop removes it, presence logged.
+
+**Critique**
+- *Mesh doesn't scale:* each client uploads N-1 copies. Fine for 2–4; SFU is the fix (already on the scale path).
+- *No TURN.* Only STUN → calls fail behind symmetric NAT / strict corporate firewalls (commonly cited ~10–20% of real users). Fix: coturn or a managed TURN; test by forcing `iceTransportPolicy: "relay"`.
+- *No auth.* Anyone with the 8-hex meeting id (32 bits) can join, including as `role: "recorder"`. Fix: signed join tokens (JWT with meetingId + role), recorder role only issuable by the server.
+- *Signaling is in-memory, single process.* Can't scale horizontally as is. Fix: route by `meetingId` (consistent hashing / sticky) so a room lives on one node, or Redis pub/sub for cross-node relay.
+- *`startedAt` = creation time,* not first join. If people join 3 min late, "first 5 minutes" is mostly silence. Open question: start clock on first join?
+- *End timers live in memory;* a restart forgets them (joins after end are still rejected by the `startedAt + durationMs` check, but connected users aren't kicked).
+- *Client is plain JS* duplicating protocol types → drift risk. Cheap fix: `// @ts-check` + JSDoc `import("../server/signaling.ts")` types so `tsc` checks the browser code too.
+- *L3 e2e is timing-based* (polls with timeouts) → potential flakiness on a loaded machine.
+
+**Interview Q&A**
+- *What is glare and how do you handle it?* Both peers send offers at once (common on renegotiation). Perfect negotiation: one side is "polite" (rolls back its own offer and accepts the other), the impolite one ignores the incoming offer. Roles are decided deterministically (id comparison), so no extra round trip.
+- *Why P2P first, SFU later?* P2P = no media server, lowest latency, $0 — ideal for 2 people. Upload grows O(N) per client and total streams grow O(N²), so past ~4 people an SFU (each client uploads once; server forwards) wins. Our recorder is already a "subscriber" in shape, which maps directly onto SFU egress.
+- *How would you scale signaling to millions of users?* Signaling is cheap (a few KB per join); the constraint is room locality. Shard by `meetingId` so each room lives on one node; stateless edge WS gateways + a pub/sub backbone for relays; presence in Redis with TTLs.
+- *How is the hidden recorder still consent-compliant?* It's hidden from the video grid, not from users — clients are told a recorder exists and show a banner driven by its actual presence.
 
 ### 3. Scribe ingest (audio)
 - `ingest/scribe.ts`: werift peer; each client opens a `sendonly` PeerConnection to it on join.
