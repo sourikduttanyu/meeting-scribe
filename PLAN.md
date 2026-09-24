@@ -21,7 +21,7 @@ Target: "pseudo-realtime" — captions ≤ ~2s after an utterance ends, summarie
 | 2.1 UI/UX overhaul | ✅ done |
 | 3. Scribe ingest (audio + share state) | ✅ done |
 | 3.5 Custom SFU (replace mesh) | ✅ done |
-| 4. Live captions | ⬜ |
+| 4. Live captions | ✅ done |
 | 5. Summaries + Q&A | ⬜ |
 | 6. Screen understanding | ⬜ |
 | 7. MCP server | ⬜ |
@@ -203,11 +203,41 @@ Upload growth is the encoder still ramping up, not duplication: each client alwa
 
 **Interview Q:** *"What does the SFU do on packet loss?"* → Two separate legs. Upstream loss (publisher → SFU): the SFU's receiver NACKs the publisher. Downstream loss (SFU → subscriber): the SFU answers the subscriber's NACK from its own ~128-packet history, so a lossy subscriber doesn't make the publisher retransmit to everyone. Audio isn't retransmitted (a late 20ms frame is useless), so it's concealed or dropped.
 
-### 4. Live captions
+### 4. Live captions ✅
 - `plugins/vad.ts`: energy VAD, 20ms frames, ~600ms hangover, 15s cap → `audio.utterance`.
 - `providers/stt/whisper-cpp.ts` → `whisper-server` HTTP; `plugins/transcribe.ts` → `transcript.final`.
 - Captions pushed to room UI.
 - **Verify:** spoken sentences appear as captions with the right speaker name within ~2s; measure and record warm latency here.
+
+**Built:** `plugins/vad.ts`, `providers/stt/whisper-cpp.ts` (behind `SttProvider`), `plugins/transcribe.ts`, `plugins/live-captions.ts` (push via `signaling.broadcast`), `GET /api/meetings/:id/transcript` (late-joiner history), Live tab. `TranscriptFinal` gained `speaker`: the event's `source` is the stage that produced it, and the speaker is data (the L0 bot matches). Verify: `npm run eval:l1` (L1 bot, scored against the script) and `npm run e2e:captions` (Chrome bots, real Whisper).
+
+**Measured:**
+
+| | Result |
+|---|---|
+| WER, L1 replay of `budget-review` (142 words, 3 voices) | **3.5%** after number/punctuation normalization. Residual: "back-end" vs "backend" ×2, "Reishi" for Rishi |
+| Speaker attribution | 0 misattributed (structural, no diarization) |
+| Transcript start vs script start | 0 ms |
+| Whisper small.en on M4 Metal, warm | p50 ~440 ms, max ~575 ms per utterance; replay runs ~10× realtime |
+| Live caption latency, end of speech → shown in another participant's Live tab | **p50 ~800 ms** (600 ms of it is the VAD hangover) |
+| Live WER (Chrome → SFU → Opus → VAD → Whisper) | 0% on fully captured loops |
+| Late joiner | full caption history on arrival |
+
+**Bug found by the L1 eval:** after a gap in frames, the VAD's pre-roll still held the silence from *before* the gap, so a new utterance's start reached back up to ~8s (alice's 0:17 line was stamped 0:09 and matched to bob's line). First eval: 54.9% WER. Pre-roll must be contiguous with the onset; after the fix: 3.5%. This is exactly what ground-truth scenarios are for: every individual transcript looked fine, and only scoring against the script exposed the timestamps.
+
+#### Critique
+- **Captions are final-only.** Nothing appears until a phrase ends (~0.8s after). Streaming ASR gives partial captions within ~300ms that get revised. *At scale:* a streaming provider (Deepgram / AssemblyAI / whisper-streaming) emitting `transcript.partial` and `transcript.final` on the same seam; the UI replaces partials in place.
+- **One Whisper queue for everyone.** Each utterance takes ~0.45s, so ~2 people talking continuously is the ceiling before captions start lagging. They lag rather than drop (`drop: "never"`), and the timeline stays correct because `t` is capture time. *At scale:* a GPU pool with batching (faster-whisper / vLLM-style), sharded by meetingId, scaling on queue lag.
+- **Energy VAD with a fixed threshold (-45 dBFS).** Fine for TTS and quiet rooms; a noisy room or a loud fan becomes one endless utterance (cut at 15s). *Next:* Silero VAD (small ONNX model) or an adaptive noise floor.
+- **Homophones without context.** Live: "LSM wins on *rights*", "almost all *depends*". Whisper supports an initial prompt: pass participant names and recent transcript or domain terms (it also fixes "Reishi"). Cheap and not done yet.
+- **Cut at 15s mid-word.** Monologue cuts can split a word across two utterances. *Better:* cut at the quietest frame in the last ~1s instead of at a fixed length.
+- **Captions go to everyone in the room.** Fine for now. Per-user language translation or redaction would need per-recipient delivery.
+- **`speakerName` scans presence events per caption.** O(presence events). Trivial at this size; a name cache per meeting at scale.
+
+**Interview Q:** *"Why not stream audio straight into Whisper?"* → Whisper is a 30-second-window encoder-decoder, not a streaming model. Feeding it fragments loses context and wastes compute on silence. VAD-segmented utterances give it whole phrases (better accuracy), skip silence entirely (roughly 40% of meeting audio), and keep the model busy only when someone talks. The price is ~0.6s of end-of-phrase detection before a caption. For word-by-word partials, you pick a streaming model and accept revisions.
+
+**Interview Q:** *"How do you know your transcription quality didn't regress?"* → Scripted scenarios are ground truth. The L1 bot replays rendered voices at scenario time through the real VAD + STT, and the eval reports WER (with number/punctuation normalization, so "12%" vs "twelve percent" isn't an error), speaker attribution and timestamp skew. It runs ~10× realtime, so it can gate changes. It caught a timestamp bug that no single transcript revealed.
+
 
 ### 5. Summaries + Q&A
 - `plugins/summarizer.ts`: 60s chunk summaries → `summary.chunk`; 10-min rollups.
@@ -253,6 +283,8 @@ Upload growth is the encoder still ramping up, not duplication: each client alwa
 | Capture-time timestamps | Timeline correct even when ASR/network lags | Same; NTP-style clock offset per client |
 | Event bus + append-only log | Plugins decoupled; new plugins replay old meetings | Log becomes Kafka/Redis Streams |
 | VAD → whole-utterance Whisper | Whisper is not streaming; utterances give best accuracy, skip silence (~40% compute saved) | Streaming STT provider for partial captions |
+| `TranscriptFinal.speaker` in data, `source` = producing stage | Pipeline self-delivery and provenance use `source`; speaker identity is payload | Same; lets several STT providers transcribe the same speaker side by side (A/B) |
+| Captions pushed through signaling, history via REST | One socket per client already exists; late joiners need a backlog anyway | Fan-out service subscribed to the bus per meetingId |
 | Provider adapters for STT/LLM/Vision | Vendor swap is a config change | Per-tenant cost/latency choice |
 | werift (pure TS WebRTC) | No native build issues on M4, debuggable | node-datachannel or SFU-native if CPU bound |
 | opusscript (libopus → WASM) over @discordjs/opus | Native binding has no Node 25 prebuild and failed to compile; WASM decodes at 15µs/packet, decoding straight to 16 kHz (no resampler) | Native libopus in a media worker, or let the SFU/STT provider take Opus directly |

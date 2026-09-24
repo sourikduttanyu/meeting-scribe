@@ -3,6 +3,7 @@ import { estimateSpeechMs, type Scenario } from "./scenario.ts";
 
 // Event contracts the real pipeline must also produce (phase 4 / 6).
 export interface TranscriptFinal {
+  speaker: string; // participantId (the event's source is whichever stage produced it)
   text: string;
   endT: number; // ms offset where the utterance ended; event.t is its start
 }
@@ -28,7 +29,7 @@ export function runL0(
   for (const line of scenario.script) {
     const base = { meetingId, t: line.at, source: line.who };
     if ("say" in line) {
-      const data: TranscriptFinal = { text: line.say, endT: line.at + speechMs(line.who, line.say) };
+      const data: TranscriptFinal = { speaker: line.who, text: line.say, endT: line.at + speechMs(line.who, line.say) };
       pipeline.publish({ ...base, topic: "transcript.final", data });
     } else if ("screen" in line) {
       const data: ScreenText = { text: line.text ?? "", image: line.screen };

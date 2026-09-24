@@ -11,6 +11,11 @@ import { Scribe } from "./ingest/scribe.ts";
 import { Router } from "./sfu/router.ts";
 import { Sfu } from "./sfu/sfu.ts";
 import { activeSpeaker } from "./plugins/active-speaker.ts";
+import { liveCaptions, speakerName } from "./plugins/live-captions.ts";
+import { transcribe } from "./plugins/transcribe.ts";
+import { vad } from "./plugins/vad.ts";
+import type { SttProvider } from "./providers/stt/types.ts";
+import type { TranscriptFinal } from "./testing/l0-bot.ts";
 import { wavDump } from "./plugins/wav-dump.ts";
 import { Signaling } from "./signaling.ts";
 
@@ -29,6 +34,7 @@ export interface AppOptions {
   dev?: boolean; // enables /dev/* routes (test bots)
   scribe?: boolean; // hidden recorder joins every started meeting (default true)
   recordWav?: string; // dir for per-speaker WAV dumps (verification); off when unset
+  stt?: SttProvider; // live captions (VAD → STT → transcript.final); off when unset
 }
 
 export interface App {
@@ -73,6 +79,11 @@ export async function startApp(opts: AppOptions = {}): Promise<App> {
       if (kind === "join" && scribe) queueMicrotask(() => scribe.ensure(meeting.id));
     },
   });
+  if (opts.stt) {
+    await pipeline.use(vad());
+    await pipeline.use(transcribe(opts.stt));
+    await pipeline.use(liveCaptions((id, msg) => signaling.broadcast(id, msg)));
+  }
   const scribe = opts.scribe === false ? null : new Scribe(signaling, router, (input, o) => pipeline.publish(input, o));
   const bots: { close(): Promise<void> }[] = [];
 
@@ -109,6 +120,17 @@ export async function startApp(opts: AppOptions = {}): Promise<App> {
       if (meeting.startedAt === null) return json(res, 200, foldNow([], 0));
       const at = url.searchParams.has("t") ? Number(url.searchParams.get("t")) : Date.now() - meeting.startedAt;
       return json(res, 200, foldNow(log.query(meeting.id, { to: at }), at));
+    }
+
+    // Captions so far, for late joiners' Live tab.
+    const tr = url.pathname.match(/^\/api\/meetings\/([\w-]+)\/transcript$/);
+    if (req.method === "GET" && tr) {
+      if (!log.getMeeting(tr[1]!)) return json(res, 404, { error: "not found" });
+      const query = (f: { topic?: string }) => log.query(tr[1]!, f);
+      return json(res, 200, query({ topic: "transcript.final" }).map((e) => {
+        const d = e.data as TranscriptFinal;
+        return { t: e.t, endT: d.endT, speaker: d.speaker, name: speakerName({ query }, d.speaker), text: d.text };
+      }));
     }
 
     const m = url.pathname.match(/^\/api\/meetings\/([\w-]+)$/);

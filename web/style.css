@@ -309,6 +309,10 @@ button, input, select { font: inherit; color: inherit; }
 .log time { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-faint); font-size: 12px; padding-top: 1px; }
 .log .who { color: var(--text-key); font-weight: 600; }
 .log .sys { color: var(--text-muted); }
+.captions li { padding: var(--space-sm) var(--space-lg); animation: caption-in var(--duration-slow) var(--ease-out); }
+.captions .who { display: block; font-size: 12px; }
+.captions .text { color: var(--text-body); }
+@keyframes caption-in { from { opacity: 0; transform: translateY(2px); } }
 .panel-empty { padding: var(--space-xl); color: var(--text-muted); }
 .panel-empty strong { display: block; color: var(--text-key); font-weight: 600; margin-bottom: var(--space-xs); }
 .ask { display: flex; gap: var(--space-md); padding: 0 var(--space-lg) var(--space-lg); }

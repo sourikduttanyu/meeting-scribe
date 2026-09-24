@@ -82,7 +82,8 @@
         <button class="tab" role="tab" aria-selected="false" data-tab="ask">Ask</button>
       </div>
       <section class="tab-panel" data-panel="live">
-        <div class="panel-empty"><strong>No captions yet</strong>Live captions appear here, labelled by speaker, once Scribe is transcribing.</div>
+        <div id="live-empty" class="panel-empty"><strong>No captions yet</strong>Live captions appear here, labelled by speaker, once Scribe is transcribing.</div>
+        <ol id="captions" class="log captions" aria-live="polite"></ol>
       </section>
       <section class="tab-panel" data-panel="timeline" hidden>
         <ol id="timeline" class="log"></ol>

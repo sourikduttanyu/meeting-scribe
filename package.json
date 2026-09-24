@@ -11,9 +11,11 @@
     "typecheck": "tsc",
     "check": "npm run typecheck && npm test",
     "scenario": "node server/testing/scenario-cli.ts",
+    "eval:l1": "node server/testing/l1-eval.ts",
     "e2e:call": "node server/testing/e2e-call.ts",
     "e2e:scribe": "node server/testing/e2e-scribe.ts",
     "e2e:sfu": "node server/testing/e2e-sfu.ts",
+    "e2e:captions": "node server/testing/e2e-captions.ts",
     "start": "node server/main.ts",
     "dev": "NODE_ENV=development node --watch server/main.ts"
   },

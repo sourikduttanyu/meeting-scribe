@@ -63,7 +63,7 @@ Scenarios (`scenarios/*.json`) are scripted meetings = ground truth for every le
 | Level | Bot | Enters at | Status |
 |---|---|---|---|
 | L0 | `server/testing/l0-bot.ts` | publishes `transcript.final` / `screen.text` / `presence.*` | ✅ |
-| L1 | audio bot | `audio.pcm` from rendered WAVs | phase 4 |
+| L1 | `server/testing/l1-eval.ts` | `audio.pcm` from rendered WAVs → VAD → Whisper, scored (WER, speakers, timing) | ✅ |
 | L2 | werift WebRTC client | signaling + Scribe, like a real user | later (CI / load tests); L3 covers the real path |
 | L3 | `server/testing/l3-bot.ts` (installed Chrome, fake media) | the real web UI | ✅ |
 
@@ -111,4 +111,6 @@ npm run dev        # + watch mode + /dev routes ("+ Add test bot" button)
 npm run e2e:call   # two headless Chrome bots: connect, recorder banner, screen share
 npm run e2e:scribe # real Scribe: speaker turns, share start/stop, /now replay, per-speaker WAVs
 npm run e2e:sfu    # upload-once, keyframe on join, server CPU per stream (BOTS=5 for more)
+npm run e2e:captions  # live captions via Chrome bots + real Whisper: WER, latency, late-joiner history
+npm run eval:l1 -- scenarios/budget-review.json   # L1: scenario audio → VAD → Whisper, scored vs script
 ```

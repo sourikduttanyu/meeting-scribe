@@ -148,6 +148,7 @@ function onServer(msg) {
       logEvent(`${selfName} joined`, true);
       for (const p of msg.peers) addParticipant(p);
       startMedia();
+      loadCaptions();
       break;
     case "peer-joined":
       addParticipant(msg.peer);
@@ -169,6 +170,9 @@ function onServer(msg) {
       break;
     case "media":
       onMedia(msg.data).catch((err) => console.error(err));
+      break;
+    case "caption":
+      addCaption(msg);
       break;
     case "ended":
       leave("Session ended — it reached its set length.");
@@ -539,6 +543,37 @@ function logEvent(text, system = false) {
   li.innerHTML = `<time>${fmt(elapsedMs())}</time><span class="${system ? "sys" : ""}"></span>`;
   li.querySelector("span").textContent = text;
   $("#timeline").append(li);
+}
+
+// ---------- live captions ----------
+// Pushed as the Scribe transcribes; a late joiner first loads everything so far.
+// Ordered by capture time t, not arrival: two speakers' transcripts can finish
+// out of order.
+
+const captionKeys = new Set();
+
+async function loadCaptions() {
+  const res = await fetch(`/api/meetings/${meetingId}/transcript`).catch(() => null);
+  if (res?.ok) for (const c of await res.json()) addCaption(c);
+}
+
+function addCaption(c) {
+  const key = `${c.t}:${c.speaker}`;
+  if (captionKeys.has(key)) return; // history fetch and live push can overlap
+  captionKeys.add(key);
+  const list = $("#captions");
+  const pinned = list.parentElement.scrollHeight - list.parentElement.scrollTop - list.parentElement.clientHeight < 40;
+  const li = document.createElement("li");
+  li.dataset.t = c.t;
+  li.dataset.end = c.endT;
+  li.innerHTML = `<time></time><div><span class="who"></span><span class="text"></span></div>`;
+  li.querySelector("time").textContent = fmt(c.t);
+  li.querySelector(".who").textContent = c.speaker === selfId ? `${c.name} (you)` : c.name;
+  li.querySelector(".text").textContent = c.text;
+  const after = [...list.children].find((el) => Number(el.dataset.t) > c.t);
+  list.insertBefore(li, after ?? null);
+  $("#live-empty").hidden = true;
+  if (pinned) list.parentElement.scrollTop = list.parentElement.scrollHeight; // follow unless the reader scrolled up
 }
 
 function setStatus(text) {

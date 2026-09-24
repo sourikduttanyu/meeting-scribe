@@ -31,6 +31,7 @@ export type ServerMsg =
   | { type: "recorder-left"; id: string }
   | { type: "signal"; from: string; data: unknown }
   | { type: "media"; data: unknown }
+  | { type: "caption"; t: number; endT: number; speaker: string; name: string; text: string }
   | { type: "ended" }
   | { type: "error"; message: string };
 
@@ -107,6 +108,13 @@ export class Signaling {
         if (conn) this.#leave(conn);
       },
     };
+  }
+
+  // Server-originated message to every participant in a meeting (live captions).
+  broadcast(meetingId: string, msg: ServerMsg): void {
+    for (const c of this.#rooms.get(meetingId)?.values() ?? []) {
+      if (c.role === "participant") c.transport.send(JSON.stringify(msg));
+    }
   }
 
   // Meeting hit its fixed duration: tell everyone, then disconnect.
