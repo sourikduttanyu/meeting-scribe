@@ -18,6 +18,7 @@ Target: "pseudo-realtime" — captions ≤ ~2s after an utterance ends, summarie
 | 1. Scaffold + core | ✅ done |
 | 1.5 Test harness (scenarios, TTS, L0 bot) | ✅ done |
 | 2. Call + signaling | ✅ done |
+| 2.1 UI/UX overhaul | ✅ done |
 | 3. Scribe ingest (audio) | ⬜ |
 | 4. Live captions | ⬜ |
 | 5. Summaries + Q&A | ⬜ |
@@ -94,6 +95,17 @@ Target: "pseudo-realtime" — captions ≤ ~2s after an utterance ends, summarie
 - *Why P2P first, SFU later?* P2P = no media server, lowest latency, $0 — ideal for 2 people. Upload grows O(N) per client and total streams grow O(N²), so past ~4 people an SFU (each client uploads once; server forwards) wins. Our recorder is already a "subscriber" in shape, which maps directly onto SFU egress.
 - *How would you scale signaling to millions of users?* Signaling is cheap (a few KB per join); the constraint is room locality. Shard by `meetingId` so each room lives on one node; stateless edge WS gateways + a pub/sub backbone for relays; presence in Redis with TTLs.
 - *How is the hidden recorder still consent-compliant?* It's hidden from the video grid, not from users — clients are told a recorder exists and show a banner driven by its actual presence.
+
+### 2.1 UI/UX overhaul ✅
+- Identity: hybrid of portfolio (deep navy, signal teal, ops vocabulary) + JellySynth (chassis vs LCD display surfaces, Doto for readouts only, one signal color, OKLCH ramps with constant hue). Tokens + rules at the top of `web/style.css`.
+- Landing: new session with length presets + join by code/link. Green room: camera preview, mic level meter, device pickers, consent line. Console room: top bar (session, REC·Scribe indicator, `T+` elapsed / length on LCD, progress bar = meeting timeline, invite copy), stage (speaking outline, muted tag, initials when camera off, screen share takes the stage), Scribe panel (Live / Timeline / Ask — Timeline already logs joins/leaves/shares; Live & Ask wait for phases 4–5), transport (Mic/Camera/Share with M/V/S shortcuts, Add bot in dev, Leave).
+- Mic/cam state now travels in `meta` so peers render MUTED / camera-off correctly.
+- **Verify:** ✅ `npm run e2e:call` still passes; screenshots of landing, green room, in-call (1440×900) and mobile checked.
+
+**Critique**
+- Speaking detection is client-side RMS with a fixed threshold → noisy rooms light up constantly. Better: use the server VAD (phase 4) and broadcast `speaking` events.
+- The Timeline panel is client-local (built from signaling events), so a late joiner's timeline starts empty. Phase 5 replaces it with the server event log — the real product.
+- Google Fonts is an external dependency for an otherwise self-contained app; self-host the two fonts for offline demos.
 
 ### 3. Scribe ingest (audio)
 - `ingest/scribe.ts`: werift peer; each client opens a `sendonly` PeerConnection to it on join.

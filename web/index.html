@@ -4,31 +4,75 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Meeting Scribe</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Doto:wght@700&family=Space+Grotesk:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<main>
-  <h1>Meeting Scribe</h1>
-  <p class="muted">Create a meeting with a fixed length. Share the link with the other person.</p>
-  <form id="join-form">
-    <input name="title" placeholder="Title" value="Q3 budget review" required>
-    <label class="row">Length (minutes) <input name="minutes" type="number" min="1" max="240" value="30" required></label>
-    <button class="primary">Create meeting</button>
-  </form>
+<main class="landing">
+  <div class="landing-card">
+    <div>
+      <div class="brand"><span class="brand-mark"></span><span class="brand-name">Meeting Scribe</span></div>
+    </div>
+    <div>
+      <h1>Meetings with a memory.</h1>
+      <p>Scribe listens alongside you and keeps a live, timestamped record. Join late and ask what you missed.</p>
+    </div>
+
+    <form id="create" class="panel">
+      <span class="eyebrow">New session</span>
+      <div class="field">
+        <label for="title" class="eyebrow">Title</label>
+        <input id="title" name="title" class="input" value="Q3 budget review" maxlength="120" required>
+      </div>
+      <div class="field">
+        <span class="eyebrow">Length</span>
+        <div class="segmented" role="radiogroup" aria-label="Length">
+          <label><input type="radio" name="minutes" value="15"><span>15m</span></label>
+          <label><input type="radio" name="minutes" value="30" checked><span>30m</span></label>
+          <label><input type="radio" name="minutes" value="60"><span>1h</span></label>
+          <label><input type="radio" name="minutes" value="120"><span>2h</span></label>
+        </div>
+      </div>
+      <button class="btn primary">Start session</button>
+      <p id="create-error" class="form-error" role="alert"></p>
+    </form>
+
+    <form id="join" class="panel">
+      <label for="code" class="eyebrow">Join with a code</label>
+      <div class="join-row">
+        <input id="code" name="code" class="input" placeholder="a3e8b112" autocomplete="off" spellcheck="false" required>
+        <button class="btn">Join</button>
+      </div>
+      <p id="join-error" class="form-error" role="alert"></p>
+    </form>
+  </div>
 </main>
 <script type="module">
-  const form = document.querySelector("#join-form");
-  form.addEventListener("submit", async (e) => {
+  const $ = (s) => document.querySelector(s);
+
+  $("#create").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const data = new FormData(form);
+    const data = new FormData(e.target);
     const res = await fetch("/api/meetings", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ title: data.get("title"), durationMs: Number(data.get("minutes")) * 60_000 }),
     });
-    const meeting = await res.json();
-    if (!res.ok) return alert(meeting.error);
-    location.href = `/room.html?m=${meeting.id}`;
+    const body = await res.json();
+    if (!res.ok) return ($("#create-error").textContent = body.error);
+    location.href = `/room.html?m=${body.id}`;
+  });
+
+  $("#join").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    // Accept a bare code or a full invite link.
+    const raw = String(new FormData(e.target).get("code")).trim();
+    const code = raw.match(/[?&]m=([\w-]+)/)?.[1] ?? raw;
+    const res = await fetch(`/api/meetings/${encodeURIComponent(code)}`);
+    if (!res.ok) return ($("#join-error").textContent = "No session with that code.");
+    location.href = `/room.html?m=${code}`;
   });
 </script>
 </body>

@@ -3,34 +3,121 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Meeting Scribe · Room</title>
+  <title>Meeting Scribe</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Doto:wght@700&family=Space+Grotesk:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<main>
-  <div class="row">
-    <h1 id="title">Meeting</h1>
+<div class="room">
+  <header class="topbar">
+    <a href="/" class="brand" aria-label="Meeting Scribe home"><span class="brand-mark"></span></a>
+    <div class="session">
+      <span class="eyebrow">Session</span>
+      <span id="title" class="session-title">Loading…</span>
+    </div>
     <span class="spacer"></span>
-    <span id="clock" class="muted"></span>
+    <span id="rec" class="rec" role="status" title="Scribe is transcribing when this is lit">Scribe offline</span>
+    <div class="clock" title="Elapsed / length">
+      <span id="elapsed" class="lcd">T+00:00</span><span id="total" class="total">/ --:--</span>
+    </div>
+    <button id="copy" class="btn" title="Copy invite link">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+      <span id="copy-label">Invite</span>
+    </button>
+  </header>
+  <div class="progress" aria-hidden="true"><div id="progress"></div></div>
+
+  <!-- Green room: preview devices before joining -->
+  <section id="greenroom" class="greenroom">
+    <div class="greenroom-card">
+      <div class="preview">
+        <video id="preview" autoplay playsinline muted></video>
+        <div id="preview-empty" class="panel-empty" hidden><div><strong>Camera off</strong>You'll join with audio only.</div></div>
+      </div>
+      <form id="join-form" class="panel">
+        <span class="eyebrow">Ready to join?</span>
+        <div class="field">
+          <label for="name" class="eyebrow">Your name</label>
+          <input id="name" name="name" class="input" maxlength="40" autocomplete="name" required>
+        </div>
+        <div class="field">
+          <label for="mic-select" class="eyebrow">Microphone</label>
+          <select id="mic-select" class="select"></select>
+          <div class="meter" aria-label="Microphone level"><div id="meter"></div></div>
+        </div>
+        <div class="field">
+          <label for="cam-select" class="eyebrow">Camera</label>
+          <select id="cam-select" class="select"></select>
+        </div>
+        <button class="btn primary">Join session</button>
+        <p id="consent" class="consent">Scribe transcribes this session when it is online. Everyone in the room sees the indicator.</p>
+      </form>
+    </div>
+  </section>
+
+  <!-- In call -->
+  <div id="incall" class="body" hidden>
+    <main class="stage">
+      <div id="grid" class="grid"></div>
+      <div id="alone" class="empty-stage">
+        <div><strong>You're the only one here.</strong></div>
+        <div>Share the invite link, or add a test bot.</div>
+      </div>
+    </main>
+
+    <aside class="scribe" aria-label="Scribe">
+      <div class="scribe-head">
+        <span class="eyebrow">Scribe</span>
+        <span id="scribe-state" class="status">Offline</span>
+      </div>
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" aria-selected="true" data-tab="live">Live</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="timeline">Timeline</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="ask">Ask</button>
+      </div>
+      <section class="tab-panel" data-panel="live">
+        <div class="panel-empty"><strong>No captions yet</strong>Live captions appear here, labelled by speaker, once Scribe is transcribing.</div>
+      </section>
+      <section class="tab-panel" data-panel="timeline" hidden>
+        <ol id="timeline" class="log"></ol>
+      </section>
+      <section class="tab-panel" data-panel="ask" hidden>
+        <div class="panel-empty"><strong>Catch up on anything</strong>Ask "what happened in the first 5 minutes?" or "what was decided about hiring?" Answers cite the moment they came from.</div>
+      </section>
+      <form id="ask" class="ask">
+        <input class="input" placeholder="Ask about this meeting…" disabled title="Available once Scribe has a transcript">
+        <button class="btn" disabled>Ask</button>
+      </form>
+    </aside>
   </div>
-  <div id="ai-banner" role="status">● AI notes on — this meeting is being transcribed and summarized.</div>
 
-  <form id="join-form">
-    <input name="name" placeholder="Your name" required>
-    <button class="primary">Join</button>
-  </form>
-
-  <div id="controls" class="row" hidden>
-    <button id="mic">Mic</button>
-    <button id="cam">Camera</button>
-    <button id="share">Share screen</button>
-    <button id="add-bot" hidden>+ Add test bot</button>
+  <footer id="transport" class="transport" hidden>
+    <button id="mic" class="btn" aria-pressed="true" title="Mute / unmute (M)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/></svg>
+      <span class="label">Mic</span><span class="kbd">M</span>
+    </button>
+    <button id="cam" class="btn" aria-pressed="true" title="Camera on / off (V)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m16 10 6-3v10l-6-3"/></svg>
+      <span class="label">Camera</span><span class="kbd">V</span>
+    </button>
+    <button id="share" class="btn" aria-pressed="false" title="Share screen (S)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4M12 7v6M9 10l3-3 3 3"/></svg>
+      <span class="label">Share</span><span class="kbd">S</span>
+    </button>
+    <button id="add-bot" class="btn" hidden title="Dev only: add a scripted test participant">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 4v4M9 13h.01M15 13h.01"/></svg>
+      <span class="label">Add bot</span>
+    </button>
     <span class="spacer"></span>
-    <span id="status" class="muted"></span>
-    <button id="leave">Leave</button>
-  </div>
-  <div id="grid"></div>
-</main>
+    <span id="status" class="status" role="status"></span>
+    <button id="leave" class="btn danger" title="Leave session">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+      <span class="label">Leave</span>
+    </button>
+  </footer>
+</div>
 <script type="module" src="/room.js"></script>
 </body>
 </html>
